@@ -29,10 +29,11 @@ class IOStructuredGridParameters : public IOParametersBase {
   OOPS_CONCRETE_PARAMETERS(IOStructuredGridParameters, IOParametersBase)
 
  public:
-  // Type of structured grid to write
+  // Type of structured grid to write/read (Atlas grid string, e.g. "F48", "L192x97",
+  // or legacy shortcuts "gaussian" and "latlon")
   oops::Parameter<std::string> outputGridType{"gridtype", "gridtype", "F12", this};
 
-  // Filename of output
+  // Filename of output/input
   oops::Parameter<std::string> filename{"filename", "filename",
                                         "cube_to_geometric_%Y%m%dT%H%M%S.nc4", this};
 
@@ -85,6 +86,9 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
   void writeStructuredFields(const atlas::FieldSet &, const util::DateTime &,
                              const eckit::LocalConfiguration &,
                              const eckit::LocalConfiguration &) const;
+  template <typename T>
+  void interpAndRead(T & obj, const std::string & label) const;
+  void readStructuredFields(atlas::FieldSet &, const util::DateTime &) const;
 
   // Data
   std::unique_ptr<oops::GlobalInterpolator> interpolator_;
