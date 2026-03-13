@@ -355,4 +355,49 @@ end subroutine c_fv3jedi_geom_verticalCoord
 
 ! --------------------------------------------------------------------------------------------------
 
+subroutine c_fv3jedi_geom_info(c_key_self, c_npx, c_npy, c_npz) &
+                               bind(c, name='fv3jedi_geom_info_f90')
+
+implicit none
+
+integer(c_int), intent( in) :: c_key_self
+integer(c_int), intent(out) :: c_npx, c_npy, c_npz
+
+type(fv3jedi_geom), pointer :: self
+
+! LinkedList
+! ----------
+call fv3jedi_geom_registry%get(c_key_self, self)
+
+c_npx = self%npx
+c_npy = self%npy
+c_npz = self%npz
+
+end subroutine c_fv3jedi_geom_info
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine c_fv3jedi_geom_get_ak_bk(c_key_self, c_npz1, c_ak, c_bk) &
+                                    bind(c, name='fv3jedi_geom_get_ak_bk_f90')
+
+implicit none
+
+integer(c_int),  intent( in) :: c_key_self
+integer(c_int),  intent( in) :: c_npz1
+real(c_double),  intent(out) :: c_ak(c_npz1)
+real(c_double),  intent(out) :: c_bk(c_npz1)
+
+type(fv3jedi_geom), pointer :: self
+
+! LinkedList
+! ----------
+call fv3jedi_geom_registry%get(c_key_self, self)
+
+c_ak(1:c_npz1) = self%ak(1:c_npz1)
+c_bk(1:c_npz1) = self%bk(1:c_npz1)
+
+end subroutine c_fv3jedi_geom_get_ak_bk
+
+! --------------------------------------------------------------------------------------------------
+
 end module fv3jedi_geom_interface_mod

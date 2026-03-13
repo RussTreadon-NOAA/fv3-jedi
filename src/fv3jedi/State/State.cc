@@ -162,14 +162,14 @@ void State::read(const Parameters_ & params) {
     }
   }
   IOBase_ io(IOFactory::create(geom_, *params.ioParametersWrapper.ioParameters.value()));
-  io->read(*this);
+  io->readBase(*this);
 }
 
 // -------------------------------------------------------------------------------------------------
 
 void State::write(const WriteParameters_ & params) const {
   IOBase_ io(IOFactory::create(geom_, *params.ioParametersWrapper.ioParameters.value()));
-  io->write(*this);
+  io->writeBase(*this);
 }
 
 // -------------------------------------------------------------------------------------------------

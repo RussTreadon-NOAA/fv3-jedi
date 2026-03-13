@@ -20,7 +20,8 @@ namespace fv3jedi {
 // -------------------------------------------------------------------------------------------------
 static IOMaker<IOFms> makerIOFms_("fms restart");
 // -------------------------------------------------------------------------------------------------
-IOFms::IOFms(const Geometry & geom, const Parameters_ & params) : IOBase(geom) {
+IOFms::IOFms(const Geometry & geom, const Parameters_ & params)
+  : IOBase(geom, params.toConfiguration()) {
   util::Timer timer(classname(), "IOFms");
   oops::Log::trace() << classname() << " constructor starting" << std::endl;
   fv3jedi_io_fms_create_f90(objectKeyForFortran_, params.toConfiguration(), geom.toFortran());
@@ -34,28 +35,32 @@ IOFms::~IOFms() {
   oops::Log::trace() << classname() << " destructor done" << std::endl;
 }
 // -------------------------------------------------------------------------------------------------
-void IOFms::read(State & x) const {
+void IOFms::read(State & x, const eckit::LocalConfiguration & fileionames,
+                 const eckit::LocalConfiguration & fileioscaling) const {
   util::Timer timer(classname(), "read state");
   oops::Log::trace() << classname() << " read state starting" << std::endl;
   fv3jedi_io_fms_read_state_f90(objectKeyForFortran_, x.toFortran());
   oops::Log::trace() << classname() << " read state done" << std::endl;
 }
 // -------------------------------------------------------------------------------------------------
-void IOFms::read(Increment & dx) const {
+void IOFms::read(Increment & dx, const eckit::LocalConfiguration & fileionames,
+                 const eckit::LocalConfiguration & fileioscaling) const {
   util::Timer timer(classname(), "read increment");
   oops::Log::trace() << classname() << " read increment starting" << std::endl;
   fv3jedi_io_fms_read_increment_f90(objectKeyForFortran_, dx.toFortran());
   oops::Log::trace() << classname() << " read increment done" << std::endl;
 }
 // -------------------------------------------------------------------------------------------------
-void IOFms::write(const State & x) const {
+void IOFms::write(const State & x, const eckit::LocalConfiguration & fileionames,
+                  const eckit::LocalConfiguration & fileioscaling) const {
   util::Timer timer(classname(), "write state");
   oops::Log::trace() << classname() << " write state starting" << std::endl;
   fv3jedi_io_fms_write_state_f90(objectKeyForFortran_, x.toFortran());
   oops::Log::trace() << classname() << " write state done" << std::endl;
 }
 // -------------------------------------------------------------------------------------------------
-void IOFms::write(const Increment & dx) const {
+void IOFms::write(const Increment & dx, const eckit::LocalConfiguration & fileionames,
+                  const eckit::LocalConfiguration & fileioscaling) const {
   util::Timer timer(classname(), "write increment");
   oops::Log::trace() << classname() << " write increment starting" << std::endl;
   fv3jedi_io_fms_write_increment_f90(objectKeyForFortran_, dx.toFortran());

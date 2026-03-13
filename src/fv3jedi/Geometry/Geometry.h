@@ -61,11 +61,19 @@ class Geometry : public util::Printable,
   atlas::FunctionSpace & functionSpace() {return functionSpaceIncludingHalo_;}
   const atlas::FieldSet & extraFields() const {return extraFields_;}
   atlas::FieldSet & extraFields() {return extraFields_;}
+  const atlas::FieldSet & fields() const {return extraFields_;}
   void latlon(std::vector<double> &, std::vector<double> &, const bool) const;
 
   std::vector<size_t> variableSizes(const oops::Variables &) const;
 
   const FieldsMetadata & fieldsMetaData() const {return *fieldsMeta_;}
+
+  // Grid dimension accessors (backed by cached Fortran values)
+  int npx() const {return npx_;}
+  int npy() const {return npy_;}
+  int npz() const {return npz_;}
+  const std::vector<double> & ak() const {return ak_;}
+  const std::vector<double> & bk() const {return bk_;}
 
  private:
   void print(std::ostream &) const;
@@ -76,6 +84,11 @@ class Geometry : public util::Printable,
   atlas::FunctionSpace functionSpaceIncludingHalo_;
   atlas::FieldSet extraFields_;
   std::shared_ptr<FieldsMetadata> fieldsMeta_;
+  int npx_;
+  int npy_;
+  int npz_;
+  std::vector<double> ak_;
+  std::vector<double> bk_;
 };
 // -------------------------------------------------------------------------------------------------
 

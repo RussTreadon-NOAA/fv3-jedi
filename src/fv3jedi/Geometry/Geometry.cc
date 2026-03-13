@@ -43,6 +43,12 @@ Geometry::Geometry(const Parameters_ & params, const eckit::mpi::Comm & comm) :
   fieldsMeta_.reset(new FieldsMetadata(params.fieldsMetadataParameters, nlev));
   fv3jedi_geom_addfmd_f90(keyGeom_, fieldsMeta_.get());
 
+  // Get dimension info from Fortran and cache
+  fv3jedi_geom_info_f90(keyGeom_, npx_, npy_, npz_);
+  ak_.resize(npz_ + 1);
+  bk_.resize(npz_ + 1);
+  fv3jedi_geom_get_ak_bk_f90(keyGeom_, npz_ + 1, ak_.data(), bk_.data());
+
   // Set lon/lat field, include halo so we can set up function spaces with/without halo
   atlas::FieldSet fs;
   const bool include_halo = true;
@@ -76,7 +82,9 @@ Geometry::Geometry(const Parameters_ & params, const eckit::mpi::Comm & comm) :
 
 // -------------------------------------------------------------------------------------------------
 
-Geometry::Geometry(const Geometry & other) : comm_(other.comm_) {
+Geometry::Geometry(const Geometry & other) : comm_(other.comm_),
+  npx_(other.npx_), npy_(other.npy_), npz_(other.npz_),
+  ak_(other.ak_), bk_(other.bk_) {
   fieldsMeta_ = std::make_shared<FieldsMetadata>(*other.fieldsMeta_);
   fv3jedi_geom_clone_f90(keyGeom_, other.keyGeom_, fieldsMeta_.get());
   functionSpace_ = atlas::functionspace::PointCloud(other.functionSpace_.lonlat());

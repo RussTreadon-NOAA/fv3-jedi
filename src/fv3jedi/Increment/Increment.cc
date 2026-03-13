@@ -201,15 +201,15 @@ void Increment::read(const ReadParameters_ & params) {
   std::unique_ptr<IOBase> io(IOFactory::create(geom_,
                                                *params.ioParametersWrapper.ioParameters.value()));
   // Perform read
-  io->read(*this);
+  io->readBase(*this);
 }
 // -------------------------------------------------------------------------------------------------
 void Increment::write(const WriteParameters_ & params) const {
   // Create IO object
   std::unique_ptr<IOBase> io(IOFactory::create(geom_,
                                                *params.ioParametersWrapper.ioParameters.value()));
-  // Perform read
-  io->write(*this);
+  // Perform write
+  io->writeBase(*this);
 }
 // -------------------------------------------------------------------------------------------------
 double Increment::norm() const {
