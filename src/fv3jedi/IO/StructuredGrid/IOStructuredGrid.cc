@@ -472,6 +472,8 @@ void IOStructuredGrid::readAndInterp(T & obj, const std::string & label,
 void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
                                             atlas::FieldSet & fields,
                                             const eckit::LocalConfiguration & ioNames) const {
+  util::Timer timer(classname(), "readStructuredFields");
+  oops::Log::trace() << classname() << " readStructuredFields starting" << std::endl;
   // Build the filename (same logic as writeStructuredFields)
   std::string pathFile = params_.filename.value();
   if (pathFile.find("%Y") == std::string::npos) {
@@ -575,6 +577,7 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
   }
 
   nc_rc(nc_close(fileId), "nc_close");
+  oops::Log::trace() << classname() << " readStructuredFields done" << std::endl;
 }
 
 // -------------------------------------------------------------------------------------------------
