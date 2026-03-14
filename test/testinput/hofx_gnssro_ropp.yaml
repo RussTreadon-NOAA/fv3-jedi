@@ -1,27 +1,61 @@
-window begin: 2020-12-14T21:00:00Z
-window length: PT6H
+time window:
+  begin: 2020-12-14T21:00:00Z
+  length: PT6H
 forecast length: PT6H
 geometry:
   fms initialization:
     namelist filename: Data/fv3files/fmsmpp.nml
     field table filename: Data/fv3files/field_table_gfdl
-  akbk: Data/fv3files/akbk127.nc4
+  akbk: Data/inputs/fv3files/akbk127.nc4
   npx: 13
   npy: 13
   npz: 127
-  field metadata override: Data/fieldmetadata/gfs-restart.yaml
 initial condition:
   datetime: 2020-12-14T21:00:00Z
   filetype: fms restart
-  state variables: [u,v,ua,va,T,DELP,sphum,ice_wat,liq_wat,o3mr,phis,
-                    slmsk,sheleg,tsea,vtype,stype,vfrac,stc,smc,snwdph,
-                    u_srf,v_srf,f10m]
+  state variables:
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - ozone_mass_mixing_ratio
+  - geopotential_height_times_gravity_at_surface
+  - slmsk
+  - sheleg
+  - skin_temperature_at_surface
+  - vtype
+  - stype
+  - vfrac
+  - stc
+  - soilMoistureVolumetric
+  - totalSnowDepth
+  - eastward_wind_at_surface
+  - northward_wind_at_surface
+  - f10m
   datapath: Data/inputs/gfs_c12/bkg/
   filename_core: 20201214.210000.fv_core.res.nc
   filename_trcr: 20201214.210000.fv_tracer.res.nc
   filename_sfcd: 20201214.210000.sfc_data.nc
   filename_sfcw: 20201214.210000.fv_srf_wnd.res.nc
   filename_cplr: 20201214.210000.coupler.res
+  field io names: &field_io_names
+    eastward_wind: ua
+    northward_wind: va
+    air_temperature: T
+    air_pressure_thickness: delp
+    water_vapor_mixing_ratio_wrt_moist_air: sphum
+    cloud_liquid_ice: ice_wat
+    cloud_liquid_water: liq_wat
+    ozone_mass_mixing_ratio: o3mr
+    geopotential_height_times_gravity_at_surface: phis
+    skin_temperature_at_surface: tsea
+    soilMoistureVolumetric: smc
+    totalSnowDepth: snwdph
+    eastward_wind_at_surface: u_srf
+    northward_wind_at_surface: v_srf
 model:
   name: FV3LM
   namelist filename: Data/fv3files/input_gfs_c12.nml
@@ -29,9 +63,32 @@ model:
   lm_do_dyn: 1
   lm_do_trb: 0
   lm_do_mst: 0
-  model variables: [u,v,ua,va,T,DELP,sphum,ice_wat,liq_wat,o3mr,phis,
-                    slmsk,sheleg,tsea,vtype,stype,vfrac,stc,smc,snwdph,
-                    u_srf,v_srf,f10m]
+  model variables:
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - ozone_mass_mixing_ratio
+  - geopotential_height_times_gravity_at_surface
+  - slmsk
+  - sheleg
+  - skin_temperature_at_surface
+  - vtype
+  - stype
+  - vfrac
+  - stc
+  - soilMoistureVolumetric
+  - totalSnowDepth
+  - eastward_wind_at_surface
+  - northward_wind_at_surface
+  - f10m
+  datapath: Data/inputs/gfs_c12/bkg/
+  filename_core: 20201214.210000.fv_core.res.nc
+  filename_core_out: checkpoint.hofx_gnssro_ropp.fv_core.res.nc
+  datapath_out: Data/forecast
 observations:
   observers:
   - obs space:
@@ -41,33 +98,34 @@ observations:
           type: H5File
           obsfile: Data/obs/testinput_tier_1/gnssro_obs_2020121500_m.nc4
         obsgrouping:
-          group variables: [record_number]
-          sort variable: impact_height
+          group variables:
+          - sequenceNumber
+          sort variable: impactHeightRO
           sort order: ascending
       obsdataout:
         engine:
           type: H5File
           obsfile: Data/hofx/GnssroBndROPP1D_hofx_gfs2020121500_m.nc4
-      simulated variables: [bending_angle]
+      simulated variables:
+      - bendingAngle
     obs operator:
       name:  GnssroBndROPP1D
     obs filters:
     - filter: Domain Check
       filter variables:
-      - name: bending_angle
+      - name: bendingAngle
       where :
       - variable:
-          name: impact_height@MetaData
+          name: MetaData/impactHeightRO
         minvalue: 0
         maxvalue: 50000
     - filter: ROobserror
       filter variables:
-      - name: bending_angle
+      - name: bendingAngle
       errmodel: NRL
-      variable: bending_angle
     - filter: Background Check
       filter variables:
-      - name: bending_angle
+      - name: bendingAngle
       threshold: 3
   - obs space:
       name: GnssroBndROPP2D
@@ -76,14 +134,16 @@ observations:
           type: H5File
           obsfile: Data/obs/testinput_tier_1/gnssro_obs_2020121500_m.nc4
         obsgrouping:
-          group variables: [record_number]
-          sort variable: impact_height
+          group variables:
+          - sequenceNumber
+          sort variable: impactHeightRO
           sort order: ascending
       obsdataout:
         engine:
           type: H5File
           obsfile: Data/hofx/GnssroBndROPP2D_hofx_gfs2020121500_m.nc4
-      simulated variables: [bending_angle]
+      simulated variables:
+      - bendingAngle
     obs operator:
       name:  GnssroBndROPP2D
       obs options:
@@ -93,25 +153,23 @@ observations:
     obs filters:
     - filter: Domain Check
       filter variables:
-      - name: bending_angle
+      - name: bendingAngle
       where :
       - variable:
-          name: impact_height@MetaData
+          name: MetaData/impactHeightRO
         minvalue: 0
         maxvalue: 50000
     - filter: ROobserror
       n_horiz: 3
       filter variables:
-      - name: bending_angle
+      - name: bendingAngle
       errmodel: NRL
-      variable: bending_angle
     - filter: Background Check
       filter variables:
-      - name: bending_angle
+      - name: bendingAngle
       threshold: 3
 prints:
   frequency: PT3H
-
 test:
   reference filename: testoutput/hofx_gnssro_ropp.ref
   test output filename: testoutput/hofx_gnssro_ropp.test.out

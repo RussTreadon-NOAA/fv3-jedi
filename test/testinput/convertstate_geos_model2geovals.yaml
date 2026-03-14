@@ -2,44 +2,80 @@ input geometry:
   fms initialization:
     namelist filename: Data/fv3files/fmsmpp.nml
     field table filename: Data/fv3files/field_table_gfdl
-  akbk: Data/fv3files/akbk72.nc4
+  akbk: Data/inputs/fv3files/akbk72.nc4
   npx: 13
   npy: 13
   npz: 72
-  field metadata override: Data/fieldmetadata/geos.yaml
 output geometry:
-  akbk: Data/fv3files/akbk72.nc4
+  akbk: Data/inputs/fv3files/akbk72.nc4
   npx: 13
   npy: 13
   npz: 72
-  field metadata override: Data/fieldmetadata/geos.yaml
-
 variable change:
   variable change name: Model2GeoVaLs
   tropopause pressure method: thompson
-  cloud effective radius method: gmao
-  input variables: &inputvars [u,v,t,delp,q,qi,ql,qr,qs,phis,frocean,frlake,frseaice,
-                               vtype,stype,vfrac,sheleg,ts,soilt,soilm,u10m,v10m]
-  output variables: [rh,ps,tv,geopotential_height,
-                      surface_altitude,mole_fraction_of_carbon_dioxide_in_air,
-                      humidity_mixing_ratio,
-                      mass_content_of_cloud_liquid_water_in_atmosphere_layer,
-                      mass_content_of_cloud_ice_in_atmosphere_layer,
-                      mass_content_of_rain_in_atmosphere_layer,
-                      mass_content_of_snow_in_atmosphere_layer,
-                      effective_radius_of_cloud_liquid_water_particle,
-                      effective_radius_of_cloud_ice_particle,
-                      effective_radius_of_rain_particle,
-                      effective_radius_of_snow_particle,
-                      water_area_fraction,
-                      land_area_fraction,ice_area_fraction,surface_snow_area_fraction,
-                      surface_temperature_where_sea, surface_temperature_where_land,
-                      surface_temperature_where_ice,surface_temperature_where_snow,
-                      surface_snow_thickness,vegetation_area_fraction,surface_wind_speed,
-                      surface_wind_from_direction,leaf_area_index,
-                      volume_fraction_of_condensed_water_in_soil,soil_temperature,
-                      land_type_index_NPOESS,vegetation_type_index,soil_type,
-                      vort,tropopause_pressure]
+  hydrometeor effective radii method: gsi
+  mask over: land
+  input variables: &inputvars
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - rain_water
+  - snow_water
+  - geopotential_height_times_gravity_at_surface
+  - fraction_of_ocean
+  - fraction_of_lake
+  - fraction_of_ice
+  - vtype
+  - stype
+  - vfrac
+  - sheleg
+  - skin_temperature_at_surface
+  - soilt
+  - soilm
+  - eastward_wind_at_surface
+  - northward_wind_at_surface
+  output variables:
+  - relative_humidity
+  - air_pressure_at_surface
+  - virtual_temperature
+  - geopotential_height
+  - height_above_mean_sea_level_at_surface
+  - mole_fraction_of_carbon_dioxide_in_air
+  - water_vapor_mixing_ratio_wrt_dry_air
+  - mass_content_of_cloud_liquid_water_in_atmosphere_layer
+  - mass_content_of_cloud_ice_in_atmosphere_layer
+  - mass_content_of_rain_in_atmosphere_layer
+  - mass_content_of_snow_in_atmosphere_layer
+  - effective_radius_of_cloud_liquid_water_particle
+  - effective_radius_of_cloud_ice_particle
+  - effective_radius_of_rain_particle
+  - effective_radius_of_snow_particle
+  - water_area_fraction
+  - land_area_fraction
+  - ice_area_fraction
+  - surface_snow_area_fraction
+  - skin_temperature_at_surface_where_sea
+  - skin_temperature_at_surface_where_land
+  - skin_temperature_at_surface_where_ice
+  - skin_temperature_at_surface_where_snow
+  - surface_snow_thickness
+  - vegetation_area_fraction
+  - wind_speed_at_surface
+  - wind_from_direction_at_surface
+  - leaf_area_index
+  - volume_fraction_of_condensed_water_in_soil
+  - soil_temperature
+  - land_type_index_NPOESS
+  - vegetation_type_index
+  - soil_type
+  - air_upward_absolute_vorticity
+  - tropopause_pressure
+  - saturation_water_vapor_mixing_ratio_wrt_moist_air
 states:
 - input:
     datetime: 2020-12-14T21:00:00Z
@@ -47,13 +83,38 @@ states:
     filetype: cube sphere history
     provider: geos
     datapath: Data/inputs/geos_c12
-    filenames: [geos.bkg.20201214_210000z.nc4,geos.bkg.crtmsrf.20201214_210000z.nc4]
+    filenames:
+    - geos.bkg.20201214_210000z.nc4
+    - geos.bkg.crtmsrf.20201214_210000z.nc4
+    field io names: &field_io_names
+      eastward_wind: ua
+      northward_wind: va
+      air_temperature: t
+      air_pressure_thickness: delp
+      water_vapor_mixing_ratio_wrt_moist_air: q
+      cloud_liquid_ice: qi
+      cloud_liquid_water: ql
+      rain_water: qr
+      snow_water: qs
+      geopotential_height_times_gravity_at_surface: phis
+      fraction_of_ocean: frocean
+      fraction_of_lake: frlake
+      fraction_of_ice: frseaice
+      skin_temperature_at_surface: ts
+      eastward_wind_at_surface: u10m
+      northward_wind_at_surface: v10m
+      relative_humidity: rh
+      air_pressure_at_surface: ps
+      virtual_temperature: tv
+      mole_fraction_of_carbon_dioxide_in_air: co2
+      air_upward_absolute_vorticity: vort
+      saturation_water_vapor_mixing_ratio_wrt_moist_air: qsat
   output:
    filetype: cube sphere history
    provider: geos
    datapath: Data/
    filename: geovals.geos.%yyyy%mm%dd_%hh%MM%ssz.nc4
-
+   field io names: *field_io_names
 test:
   reference filename: testoutput/convertstate_geos_model2geovals.ref
   test output filename: testoutput/convertstate_geos_model2geovals.test.out

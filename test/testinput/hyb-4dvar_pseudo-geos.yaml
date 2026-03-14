@@ -1,40 +1,145 @@
 cost function:
-  analysis variables: &anavars [ua,va,t,ps,q,qi,ql,o3ppmv]
+  analysis variables: &anavars
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - mole_fraction_of_ozone_in_air
   background:
     datetime: 2020-12-14T21:00:00Z
     filetype: cube sphere history
     provider: geos
     datapath: Data/inputs/geos_c12
-    filenames: [geos.bkg.%yyyy%mm%dd_%hh%MM%ssz.nc4, geos.bkg.crtmsrf.%yyyy%mm%dd_%hh%MM%ssz.nc4]
-    state variables: [u,v,ua,va,t,delp,ps,q,qi,ql,o3ppmv,phis,
-                      qls,qcn,cfcn,frocean,frland,varflt,ustar,bstar,
-                      zpbl,cm,ct,cq,kcbl,tsm,khl,khu,frlake,frseaice,vtype,
-                      stype,vfrac,sheleg,ts,soilt,soilm,u10m,v10m]
+    filenames:
+    - geos.bkg.%yyyy%mm%dd_%hh%MM%ssz.nc4
+    - geos.bkg.crtmsrf.%yyyy%mm%dd_%hh%MM%ssz.nc4
+    state variables:
+    - eastward_wind
+    - northward_wind
+    - air_temperature
+    - air_pressure_thickness
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - cloud_liquid_ice
+    - cloud_liquid_water
+    - mole_fraction_of_ozone_in_air
+    - geopotential_height_times_gravity_at_surface
+    - initial_mass_fraction_of_large_scale_cloud_condensate
+    - initial_mass_fraction_of_convective_cloud_condensate
+    - convective_cloud_area_fraction
+    - fraction_of_ocean
+    - fraction_of_land
+    - isotropic_variance_of_filtered_topography
+    - surface_velocity_scale
+    - surface_buoyancy_scale
+    - planetary_boundary_layer_height
+    - surface_exchange_coefficient_for_momentum
+    - surface_exchange_coefficient_for_heat
+    - surface_exchange_coefficient_for_moisture
+    - KCBL_before_moist
+    - surface_temp_before_moist
+    - lower_index_where_Kh_greater_than_2
+    - upper_index_where_Kh_greater_than_2
+    - fraction_of_lake
+    - fraction_of_ice
+    - vtype
+    - stype
+    - vfrac
+    - sheleg
+    - skin_temperature_at_surface
+    - soilt
+    - soilm
+    - eastward_wind_at_surface
+    - northward_wind_at_surface
+    field io names: &field_io_names
+      eastward_wind: ua
+      northward_wind: va
+      air_temperature: t
+      air_pressure_thickness: delp
+      water_vapor_mixing_ratio_wrt_moist_air: q
+      cloud_liquid_ice: qi
+      cloud_liquid_water: ql
+      mole_fraction_of_ozone_in_air: o3ppmv
+      geopotential_height_times_gravity_at_surface: phis
+      initial_mass_fraction_of_large_scale_cloud_condensate: qls
+      initial_mass_fraction_of_convective_cloud_condensate: qcn
+      convective_cloud_area_fraction: cfcn
+      fraction_of_ocean: frocean
+      fraction_of_land: frland
+      isotropic_variance_of_filtered_topography: varflt
+      surface_velocity_scale: ustar
+      surface_buoyancy_scale: bstar
+      planetary_boundary_layer_height: zpbl
+      surface_exchange_coefficient_for_momentum: cm
+      surface_exchange_coefficient_for_heat: ct
+      surface_exchange_coefficient_for_moisture: cq
+      KCBL_before_moist: kcbl
+      surface_temp_before_moist: tsm
+      lower_index_where_Kh_greater_than_2: khl
+      upper_index_where_Kh_greater_than_2: khu
+      fraction_of_lake: frlake
+      fraction_of_ice: frseaice
+      skin_temperature_at_surface: ts
+      eastward_wind_at_surface: u10m
+      northward_wind_at_surface: v10m
+      air_pressure_at_surface: ps
   background error:
     covariance model: hybrid
     components:
     - covariance:
         covariance model: SABER
-        saber blocks:
-        - saber block name: BUMP_NICAS
-          saber central block: true
-          iterative inverse: true
-          input variables: &bvars [ua,va,t,ps,q,qi,ql,o3ppmv]
-          output variables: *bvars
-          bump:
-            method: cor
-            strategy: specific_univariate
-            load_nicas_local: true
-            verbosity: main
+        saber central block:
+          saber block name: BUMP_NICAS
+          read:
+            io:
+              files prefix: Data/bump/fv3jedi_bumpparameters_nicas_geos
+              alias:
+              - in code: eastward_wind
+                in file: fixed_2500km_0.3
+              - in code: northward_wind
+                in file: fixed_2500km_0.3
+              - in code: air_temperature
+                in file: fixed_2500km_0.3
+              - in code: water_vapor_mixing_ratio_wrt_moist_air
+                in file: fixed_2500km_0.3
+              - in code: cloud_liquid_ice
+                in file: fixed_2500km_0.3
+              - in code: cloud_liquid_water
+                in file: fixed_2500km_0.3
+              - in code: mole_fraction_of_ozone_in_air
+                in file: fixed_2500km_0.3
+              - in code: air_pressure_at_surface
+                in file: fixed_2500km
+            drivers:
+              multivariate strategy: univariate
+              read local nicas: true
             grids:
-            - prefix: Data/bump/fv3jedi_bumpparameters_nicas_3D_geos
-              variables: [eastward_wind,northward_wind,air_temperature,specific_humidity,cloud_liquid_ice,cloud_liquid_water,mole_fraction_of_ozone_in_air]
-              io_keys: [eastward_wind-eastward_wind,northward_wind-northward_wind,air_temperature-air_temperature,specific_humidity-specific_humidity,cloud_liquid_ice-cloud_liquid_ice,cloud_liquid_water-cloud_liquid_water,mole_fraction_of_ozone_in_air-mole_fraction_of_ozone_in_air]
-              io_values: [fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3]
-            - prefix: Data/bump/fv3jedi_bumpparameters_nicas_2D_geos
-              variables: [surface_pressure]
-              io_keys: [surface_pressure-surface_pressure]
-              io_values: [fixed_2500km]
+            - model:
+                variables:
+                - eastward_wind
+                - northward_wind
+                - air_temperature
+                - water_vapor_mixing_ratio_wrt_moist_air
+                - cloud_liquid_ice
+                - cloud_liquid_water
+                - mole_fraction_of_ozone_in_air
+            - model:
+                variables:
+                - air_pressure_at_surface
+        linear variable change:
+          linear variable change name: Control2Analysis
+          input variables:
+          - eastward_wind
+          - northward_wind
+          - air_temperature
+          - air_pressure_at_surface
+          - water_vapor_mixing_ratio_wrt_moist_air
+          - cloud_liquid_ice
+          - cloud_liquid_water
+          - mole_fraction_of_ozone_in_air
+          output variables: *anavars
       weight:
         value: 0.1
     - covariance:
@@ -44,35 +149,65 @@ cost function:
             datetime: 2020-12-14T21:00:00Z
             filetype: cube sphere history
             provider: geos
-            state variables: *bvars
+            state variables: &bvars
+            - eastward_wind
+            - northward_wind
+            - air_temperature
+            - air_pressure_at_surface
+            - water_vapor_mixing_ratio_wrt_moist_air
+            - cloud_liquid_ice
+            - cloud_liquid_water
+            - mole_fraction_of_ozone_in_air
             datapath: Data/inputs/geos_c12
             filename: geos.mem%mem%.20201214_210000z.nc4
+            field io names: *field_io_names
           pattern: '%mem%'
           nmembers: 10
           zero padding: 3
         localization:
           localization method: SABER
-          saber block:
+          saber central block:
             saber block name: BUMP_NICAS
-            input variables: *bvars
-            output variables: *bvars
-            bump:
-              prefix: Data/bump/fv3jedi_bumpparameters_nicas_3D_geos
-              method: loc
-              strategy: common
-              load_nicas_local: true
-              verbosity: main
-              io_keys: [common]
-              io_values: [fixed_2500km_0.3]
+            active variables:
+            - eastward_wind
+            - northward_wind
+            - air_temperature
+            - air_pressure_at_surface
+            - water_vapor_mixing_ratio_wrt_moist_air
+            - cloud_liquid_ice
+            - cloud_liquid_water
+            - mole_fraction_of_ozone_in_air
+            read:
+              io:
+                files prefix: Data/bump/fv3jedi_bumpparameters_nicas_geos
+                alias:
+                - in code: common
+                  in file: fixed_2500km_0.3
+              drivers:
+                multivariate strategy: duplicated
+                read local nicas: true
+        linear variable change:
+          linear variable change name: Control2Analysis
+          input variables:
+          - eastward_wind
+          - northward_wind
+          - air_temperature
+          - air_pressure_at_surface
+          - water_vapor_mixing_ratio_wrt_moist_air
+          - cloud_liquid_ice
+          - cloud_liquid_water
+          - mole_fraction_of_ozone_in_air
+          output variables: *anavars
       weight:
          value: 0.9
   observations:
+    get values:
+      variable change:
+        variable change name: Model2GeoVaLs
+        hydrometeor effective radii method: gsi
+        mask over: land
     observers:
     - obs space:
-        # The input file does not contain a variable called 'air_temperature', but contains one
-        # called 'renamed_air_temperature'. We use filters to copy renamed_air_temperature@ObsValue
-        # to air_temperature@DerivedObsValue and renamed_air_temperature@ObsError to
-        # air_temperature@ObsError. In this way we verify derived variables can be assimilated.
         name: Aircraft
         obsdatain:
           engine:
@@ -82,43 +217,51 @@ cost function:
           engine:
             type: H5File
             obsfile: Data/hofx/aircraft_hyb-3dvar-gfs_2020121500_m.nc4
-        simulated variables: [eastward_wind, northward_wind, air_temperature]
-        observed variables: [eastward_wind, northward_wind]
-        derived variables: [air_temperature]
+        simulated variables:
+        - windEastward
+        - windNorthward
+        - airTemperature
+        observed variables:
+        - windEastward
+        - windNorthward
+        derived variables:
+        - airTemperature
       obs operator:
         name: VertInterp
+        vertical coordinate: air_pressure
+        observation vertical coordinate: pressure
+        observation vertical coordinate group: MetaData
+        interpolation method: log-linear
       obs error:
         covariance model: diagonal
       obs filters:
-      # Create a derived variable
       - filter: Variable Assignment
         assignments:
-        - name: air_temperature@DerivedObsValue
+        - name: DerivedObsValue/airTemperature
           type: float
           source variable:
-            name: renamed_air_temperature@ObsValue
-      # Populate its ObsError estimates (filled with missing values up to now)
+            name: ObsValue/renamed_airTemperature
       - filter: Perform Action
-        filter variables: [air_temperature]
+        filter variables:
+        - airTemperature
         action:
           name: assign error
           error function:
-            name: renamed_air_temperature@ObsError
-      # Populate its PreQC flags
+            name: ObsError/renamed_airTemperature
       - filter: Variable Assignment
         assignments:
-        - name: air_temperature@PreQC
+        - name: PreQC/airTemperature
           type: int
           source variable:
-            name: renamed_air_temperature@PreQC
+            name: PreQC/renamed_airTemperature
       - filter: PreQC
         maxvalue: 3
       - filter: Background Check
         apply at iterations: 0, 1
         filter variables:
-        - name: eastward_wind
-        - name: northward_wind
-        - name: air_temperature
+        - name: windEastward
+        - name: windNorthward
+        - name: airTemperature
         threshold: 6.0
     - obs space:
         name: GnssroBndNBAM
@@ -126,7 +269,8 @@ cost function:
           engine:
             type: H5File
             obsfile: Data/obs/testinput_tier_1/gnssro_obs_2020121500_m.nc4
-        simulated variables: [bending_angle]
+        simulated variables:
+        - bendingAngle
       obs operator:
         name: GnssroBndNBAM
         obs options:
@@ -139,31 +283,36 @@ cost function:
       obs filters:
       - filter: Domain Check
         filter variables:
-        - name: bending_angle
+        - name: bendingAngle
         where:
         - variable:
-            name: impact_height@MetaData
+            name: MetaData/impactHeightRO
           minvalue: 0
           maxvalue: 50000
       - filter: ROobserror
         filter variables:
-        - name: bending_angle
+        - name: bendingAngle
         errmodel: NBAM
       - filter: Background Check RONBAM
         filter variables:
-        - name: bending_angle
+        - name: bendingAngle
     - obs space:
         name: AMSUA-NOAA19
         obsdatain:
           engine:
             type: H5File
             obsfile: Data/obs/testinput_tier_1/amsua_n19_obs_2020121500_m.nc4
-        simulated variables: [brightness_temperature]
+        simulated variables:
+        - brightnessTemperature
         channels: 1-15
       obs operator:
         name: CRTM
-        Absorbers: [H2O,O3]
-        Clouds: [Water, Ice]
+        Absorbers:
+        - H2O
+        - O3
+        Clouds:
+        - Water
+        - Ice
         Cloud_Fraction: 1.0
         obs options:
           Sensor_ID: amsua_n19
@@ -174,44 +323,38 @@ cost function:
       obs filters:
       - filter: Bounds Check
         filter variables:
-        - name: brightness_temperature
+        - name: brightnessTemperature
           channels: 1-15
         minvalue: 100.0
         maxvalue: 500.0
       - filter: Background Check
         filter variables:
-        - name: brightness_temperature
+        - name: brightnessTemperature
           channels: 1-15
         threshold: 3.0
   cost type: 4D-Var
-  window begin: 2020-12-14T21:00:00Z
-  window length: PT6H
-  variable change:
-    variable change name: Analysis2Model
+  time window:
+    begin: 2020-12-14T21:00:00Z
+    length: PT6H
   model:
     name: PSEUDO
     filetype: cube sphere history
     provider: geos
     datapath: Data/inputs/geos_c12
-    filenames: [geos.bkg.%yyyy%mm%dd_%hh%MM%ssz.nc4, geos.bkg.crtmsrf.%yyyy%mm%dd_%hh%MM%ssz.nc4]
+    filenames:
+    - geos.bkg.%yyyy%mm%dd_%hh%MM%ssz.nc4
+    - geos.bkg.crtmsrf.%yyyy%mm%dd_%hh%MM%ssz.nc4
     run stage check: true
     tstep: PT1H
-    model variables: [u,v,t,delp,q,qi,ql,o3ppmv,phis,
-                      qls,qcn,cfcn,frocean,frland,varflt,ustar,bstar,
-                      zpbl,cm,ct,cq,kcbl,tsm,khl,khu,frlake,frseaice,vtype,
-                      stype,vfrac,sheleg,ts,soilt,soilm,u10m,v10m]
+    field io names: *field_io_names
   geometry:
     fms initialization:
       namelist filename: Data/fv3files/fmsmpp.nml
       field table filename: Data/fv3files/field_table_gmao
-    akbk: Data/fv3files/akbk72.nc4
+    akbk: Data/inputs/fv3files/akbk72.nc4
     npx: 13
     npy: 13
     npz: 72
-    field metadata override: Data/fieldmetadata/geos.yaml
-final:
-  diagnostics:
-    departures: oman
 output:
   filetype: cube sphere history
   provider: geos
@@ -219,37 +362,28 @@ output:
   filename: hyb-4dvar-geos.ana.%yyyy%mm%dd_%hh%MM%ssz.nc4
   first: PT0H
   frequency: PT1H
+  field io names: *field_io_names
 variational:
   minimizer:
-    algorithm: DRIPCG
+    algorithm: DRPCG
   iterations:
   - ninner: 3
     gradient norm reduction: 1e-10
     test: on
     geometry:
-      akbk: Data/fv3files/akbk72.nc4
+      akbk: Data/inputs/fv3files/akbk72.nc4
       npx: 13
       npy: 13
       npz: 72
-      field metadata override: Data/fieldmetadata/geos.yaml
-    diagnostics:
-      departures: ombg
     linear model:
       name: FV3JEDITLM
       namelist filename: Data/fv3files/input_geos_c12.nml
       linear model namelist filename: Data/fv3files/inputpert_4dvar.nml
       tstep: PT1H
-      tlm variables: [u,v,t,delp,q,qi,ql,o3ppmv]
       lm_do_dyn: 1
       lm_do_trb: 1
       lm_do_mst: 1
-      trajectory:
-        model variables: [u,v,t,delp,q,qi,ql,o3ppmv,phis,
-                          qls,qcn,cfcn,frocean,frland,varflt,ustar,bstar,
-                          zpbl,cm,ct,cq,kcbl,tsm,khl,khu]
-    linear variable change:
-      linear variable change name: Analysis2Model
-
 test:
   reference filename: testoutput/hyb-4dvar_pseudo-geos.ref
   test output filename: testoutput/hyb-4dvar_pseudo-geos.test.out
+  float relative tolerance: 1.0e-4

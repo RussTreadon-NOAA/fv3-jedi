@@ -2,13 +2,13 @@ geometry:
   fms initialization:
     namelist filename: Data/fv3files/fmsmpp.nml
     field table filename: Data/fv3files/field_table_gfdl
-  akbk: Data/fv3files/akbk127.nc4
-  layout: [1,2]
+  akbk: Data/inputs/fv3files/akbk127.nc4
+  layout:
+  - 1
+  - 2
   npx: 13
   npy: 13
   npz: 127
-  field metadata override: Data/fieldmetadata/gfs-restart.yaml
-input variables: [T,ps]
 background:
   datetime: 2020-12-14T21:00:00Z
   filetype: fms restart
@@ -18,50 +18,75 @@ background:
   filename_sfcd: 20201214.210000.sfc_data.nc
   filename_sfcw: 20201214.210000.fv_srf_wnd.res.nc
   filename_cplr: 20201214.210000.coupler.res
-  state variables: [T,ps]
-bump:
-  verbosity: main
-  universe_rad: 2500.0e3
-  strategy: specific_univariate
-  new_nicas: true
-  write_nicas_local: true
-  resol: 6
-  forced_radii: true
-  grids:
-  - prefix: Data/bump/fv3jedi_bumpparameters_nicas_3D_gfs_p12
-    variables: [air_temperature]
-    rh:
-      air_temperature: [2500000.0]
-    rv:
-      air_temperature: [0.3]
-    io_keys: [air_temperature-air_temperature]
-    io_values: [fixed_2500km_0.3]
-  - prefix: Data/bump/fv3jedi_bumpparameters_nicas_2D_gfs_p12
-    variables: [surface_pressure]
-    rh:
-      surface_pressure: [2500000.0]
-    rv:
-      surface_pressure: [0.0]
-    io_keys: [surface_pressure-surface_pressure]
-    io_values: [fixed_2500km]
-  output:
-  - parameter: cor_rh
-    filetype: fms restart
-    datapath: Data/bump/
-    filename_core: bumpparameters_nicas_gfs_p12.cor_rh.fv_core.res.nc
-    filename_trcr: bumpparameters_nicas_gfs_p12.cor_rh.fv_tracer.res.nc
-    filename_sfcd: bumpparameters_nicas_gfs_p12.cor_rh.sfc_data.nc
-    filename_sfcw: bumpparameters_nicas_gfs_p12.cor_rh.fv_srf_wnd.res.nc
-    filename_cplr: bumpparameters_nicas_gfs_p12.cor_rh.coupler.res
-  - parameter: cor_rv
-    filetype: fms restart
-    datapath: Data/bump/
-    filename_core: bumpparameters_nicas_gfs_p12.cor_rv.fv_core.res.nc
-    filename_trcr: bumpparameters_nicas_gfs_p12.cor_rv.fv_tracer.res.nc
-    filename_sfcd: bumpparameters_nicas_gfs_p12.cor_rv.sfc_data.nc
-    filename_sfcw: bumpparameters_nicas_gfs_p12.cor_rv.fv_srf_wnd.res.nc
-    filename_cplr: bumpparameters_nicas_gfs_p12.cor_rv.coupler.res
-
+  state variables:
+  - air_temperature
+  - air_pressure_at_surface
+  field io names: &field_io_names
+    air_temperature: T
+    air_pressure_at_surface: ps
+background error:
+  covariance model: SABER
+  saber central block:
+    saber block name: BUMP_NICAS
+    calibration:
+      general:
+        universe length-scale: 2500.0e3
+      io:
+        files prefix: Data/bump/fv3jedi_bumpparameters_nicas_gfs_p12
+        alias:
+        - in code: air_temperature
+          in file: fixed_2500km_0.3
+        - in code: air_pressure_at_surface
+          in file: fixed_2500km
+      drivers:
+        multivariate strategy: univariate
+        compute nicas: true
+        write local nicas: true
+      nicas:
+        resolution: 6
+        explicit length-scales: true
+        horizontal length-scale:
+        - groups:
+          - air_temperature
+          value: 2500000.0
+        - groups:
+          - air_pressure_at_surface
+          value: 2500000.0
+        vertical length-scale:
+        - groups:
+          - air_temperature
+          value: 0.3
+        - groups:
+          - air_pressure_at_surface
+          value: 0.0
+      grids:
+      - model:
+          variables:
+          - air_temperature
+      - model:
+          variables:
+          - air_pressure_at_surface
+      output model files:
+      - parameter: cor_rh
+        file:
+          filetype: fms restart
+          datapath: Data/bump/
+          filename_core: bumpparameters_nicas_gfs_p12.cor_rh.fv_core.res.nc
+          filename_trcr: bumpparameters_nicas_gfs_p12.cor_rh.fv_tracer.res.nc
+          filename_sfcd: bumpparameters_nicas_gfs_p12.cor_rh.sfc_data.nc
+          filename_sfcw: bumpparameters_nicas_gfs_p12.cor_rh.fv_srf_wnd.res.nc
+          filename_cplr: bumpparameters_nicas_gfs_p12.cor_rh.coupler.res
+          field io names: *field_io_names
+      - parameter: cor_rv
+        file:
+          filetype: fms restart
+          datapath: Data/bump/
+          filename_core: bumpparameters_nicas_gfs_p12.cor_rv.fv_core.res.nc
+          filename_trcr: bumpparameters_nicas_gfs_p12.cor_rv.fv_tracer.res.nc
+          filename_sfcd: bumpparameters_nicas_gfs_p12.cor_rv.sfc_data.nc
+          filename_sfcw: bumpparameters_nicas_gfs_p12.cor_rv.fv_srf_wnd.res.nc
+          filename_cplr: bumpparameters_nicas_gfs_p12.cor_rv.coupler.res
+          field io names: *field_io_names
 test:
   reference filename: testoutput/bumpparameters_nicas_gfs.ref
   test output filename: testoutput/bumpparameters_nicas_gfs_p12.test.out

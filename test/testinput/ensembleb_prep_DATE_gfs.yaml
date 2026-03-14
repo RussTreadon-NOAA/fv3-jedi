@@ -1,0 +1,78 @@
+geometry:
+  fms initialization:
+    namelist filename: Data/fv3files/fmsmpp.nml
+    field table filename: Data/fv3files/field_table_gfdl
+  akbk: Data/inputs/fv3files/akbk127.nc4
+  layout:
+  - 1
+  - 2
+  npx: 13
+  npy: 13
+  npz: 127
+background:
+  datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
+  filetype: fms restart
+  state variables: &stateVariables
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_at_surface
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_water
+  - cloud_liquid_ice
+  - ozone_mass_mixing_ratio
+  datapath: Data/inputs/gfs_c12/mem001/
+  filename_core: _YYYY__MM__DD_._HH_0000.fv_core.res.nc
+  filename_trcr: _YYYY__MM__DD_._HH_0000.fv_tracer.res.nc
+  filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
+  filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
+  filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+  field io names: &field_io_names
+    eastward_wind: ua
+    northward_wind: va
+    air_temperature: T
+    air_pressure_at_surface: ps
+    water_vapor_mixing_ratio_wrt_moist_air: sphum
+    cloud_liquid_water: liq_wat
+    cloud_liquid_ice: ice_wat
+    ozone_mass_mixing_ratio: o3mr
+background error:
+  covariance model: SABER
+  iterative ensemble loading: true
+  ensemble:
+    members from template:
+      template:
+        datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
+        filetype: fms restart
+        state variables: *stateVariables
+        datapath: Data/inputs/gfs_c12/mem%mem%/
+        filename_core: _YYYY__MM__DD_._HH_0000.fv_core.res.nc
+        filename_trcr: _YYYY__MM__DD_._HH_0000.fv_tracer.res.nc
+        filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
+        filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
+        filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+        field io names: *field_io_names
+      pattern: '%mem%'
+      nmembers: 10
+      zero padding: 3
+  saber central block:
+    saber block name: BUMP_NICAS
+    calibration:
+      general:
+        universe length-scale: 5000.0e3
+      io:
+        data directory: Data/ensembleb
+        files prefix: mom__YYYY__MM__DD__HH__gfs
+      drivers:
+        multivariate strategy: duplicated
+        write local sampling: true
+        compute moments: true
+        write moments: true
+      sampling:
+        computation grid size: 500
+        distance classes: 10
+        distance class width: 500.0e3
+        reduced levels: 5
+        grid type: octahedral
+test:
+  reference filename: testoutput/ensembleb_prep__YYYY__MM__DD__HH__gfs.ref

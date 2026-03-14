@@ -1,23 +1,63 @@
-window begin: 2020-12-14T21:00:00Z
-window length: PT6H
+time window:
+  begin: 2020-12-14T21:00:00Z
+  length: PT6H
 forecast length: PT6H
 geometry:
   fms initialization:
     namelist filename: Data/fv3files/input_geos_c12.nml
     field table filename: Data/fv3files/field_table_gmao
-  akbk: Data/fv3files/akbk72.nc4
+  akbk: Data/inputs/fv3files/akbk72.nc4
   npx: 13
   npy: 13
   npz: 72
-  field metadata override: Data/fieldmetadata/geos.yaml
 initial condition:
   datetime: 2020-12-14T21:00:00Z
   filetype: cube sphere history
   provider: geos
-  state variables: [u,v,ua,va,t,delp,q,qi,ql,o3ppmv,phis,frocean,frlake,
-                    frseaice,vtype,stype,vfrac,sheleg,ts,soilt,soilm,u10m,v10m]
+  state variables:
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - mole_fraction_of_ozone_in_air
+  - geopotential_height_times_gravity_at_surface
+  - fraction_of_ocean
+  - fraction_of_lake
+  - fraction_of_ice
+  - vtype
+  - stype
+  - vfrac
+  - sheleg
+  - skin_temperature_at_surface
+  - soilt
+  - soilm
+  - eastward_wind_at_surface
+  - northward_wind_at_surface
+  - mole_fraction_of_carbon_dioxide_in_air
   datapath: Data/inputs/geos_c12
-  filenames: [geos.bkg.20201214_210000z.nc4, geos.bkg.crtmsrf.20201214_210000z.nc4]
+  filenames:
+  - geos.bkg.20201214_210000z.nc4
+  - geos.bkg.crtmsrf.20201214_210000z.nc4
+  field io names: &field_io_names
+    eastward_wind: ua
+    northward_wind: va
+    air_temperature: t
+    air_pressure_thickness: delp
+    water_vapor_mixing_ratio_wrt_moist_air: q
+    cloud_liquid_ice: qi
+    cloud_liquid_water: ql
+    mole_fraction_of_ozone_in_air: o3ppmv
+    geopotential_height_times_gravity_at_surface: phis
+    fraction_of_ocean: frocean
+    fraction_of_lake: frlake
+    fraction_of_ice: frseaice
+    skin_temperature_at_surface: ts
+    eastward_wind_at_surface: u10m
+    northward_wind_at_surface: v10m
+    mole_fraction_of_carbon_dioxide_in_air: co2
 model:
   name: FV3LM
   use internal namelist: true
@@ -25,13 +65,38 @@ model:
   lm_do_dyn: 1
   lm_do_trb: 0
   lm_do_mst: 0
-  model variables: [u,v,ua,va,t,delp,q,qi,ql,o3ppmv,phis,frocean,frlake,
-                    frseaice,vtype,stype,vfrac,sheleg,ts,soilt,soilm,u10m,v10m]
+  model variables:
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - mole_fraction_of_ozone_in_air
+  - geopotential_height_times_gravity_at_surface
+  - fraction_of_ocean
+  - fraction_of_lake
+  - fraction_of_ice
+  - vtype
+  - stype
+  - vfrac
+  - sheleg
+  - skin_temperature_at_surface
+  - soilt
+  - soilm
+  - eastward_wind_at_surface
+  - northward_wind_at_surface
+  datapath: Data/inputs/geos_c12
+  filename_core: 20201214_210000.geos.fv_core.res.nc
+  filename_core_out: checkpoint.hofx_fv3lm.fv_core.res.nc
+  datapath_out: Data/forecast
 observations:
   get values:
     variable change:
       variable change name: Model2GeoVaLs
-      tropopause pressure method: thompson
+      tropopause pressure method: gsi
+      mask over: land
   observers:
   - obs space:
       name: Aircraft
@@ -43,9 +108,16 @@ observations:
         engine:
           type: H5File
           obsfile: Data/hofx/aircraft_hofx_geos_2020121500_m.nc4
-      simulated variables: [eastward_wind, northward_wind, air_temperature]
+      simulated variables:
+      - windEastward
+      - windNorthward
+      - airTemperature
     obs operator:
       name: VertInterp
+      vertical coordinate: air_pressure
+      observation vertical coordinate: pressure
+      observation vertical coordinate group: MetaData
+      interpolation method: log-linear
     obs error:
       covariance model: diagonal
     get values:
@@ -56,7 +128,8 @@ observations:
         engine:
           type: H5File
           obsfile: Data/obs/testinput_tier_1/gnssro_obs_2020121500_m.nc4
-      simulated variables: [bending_angle]
+      simulated variables:
+      - bendingAngle
     obs operator:
       name: GnssroBndNBAM
       obs options:
@@ -65,7 +138,7 @@ observations:
         use_compress: 1
         super_ref_qc: NBAM
     obs error:
-      covariance model: diagonal ufo
+      covariance model: diagonal
     get values:
       time interpolation: linear
   - obs space:
@@ -74,12 +147,18 @@ observations:
         engine:
           type: H5File
           obsfile: Data/obs/testinput_tier_1/amsua_n19_obs_2020121500_m.nc4
-      simulated variables: [brightness_temperature]
+      simulated variables:
+      - brightnessTemperature
       channels: 1-15
     obs operator:
       name: CRTM
-      Absorbers: [H2O,O3,CO2]
-      Clouds: [Water, Ice]
+      Absorbers:
+      - H2O
+      - O3
+      - CO2
+      Clouds:
+      - Water
+      - Ice
       Cloud_Fraction: 1.0
       SurfaceWindGeoVars: uv
       obs options:
@@ -87,12 +166,35 @@ observations:
         EndianType: little_endian
         CoefficientPath: Data/crtm/
     obs error:
-      covariance model: diagonal ufo
+      covariance model: diagonal
     get values:
       time interpolation: linear
+output:
+  filetype: cube sphere history
+  provider: geos
+  datapath: Data/forecast
+  filename: test_hofx4d.fc.%yyyy%mm%dd_%hh%MM%ssz.nc4
+  first: PT0H
+  frequency: PT3H
+forecast to structured grid:
+  grid type: latlon
+  local interpolator type: oops unstructured grid interpolator
+  resolution in degrees: 10.0
+  variables to output:
+  - air_temperature
+  - eastward_wind
+  - northward_wind
+  pressure levels in hPa:
+  - 850
+  - 500
+  - 250
+  frequency: PT3H
+  datapath: Data/forecast
+  date colons: false
+  type: fc
+  exp: test_hofx4d
 prints:
   frequency: PT3H
-
 test:
   reference filename: testoutput/hofx_fv3lm.ref
   test output filename: testoutput/hofx_fv3lm.test.out

@@ -1,0 +1,75 @@
+input geometry:
+  fms initialization:
+    namelist filename: Data/fv3files/fmsmpp.nml
+    field table filename: Data/fv3files/field_table_gfdl
+  akbk: Data/inputs/fv3files/akbk127.nc4
+  npx: 13
+  npy: 13
+  npz: 127
+output geometry:
+  akbk: Data/inputs/fv3files/akbk127.nc4
+  npx: 13
+  npy: 13
+  npz: 127
+variable change:
+  variable change name: Model2GeoVaLs
+  input variables: &vars
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - ozone_mass_mixing_ratio
+  - geopotential_height_times_gravity_at_surface
+  - slmsk
+  - sheleg
+  - skin_temperature_at_surface
+  - vtype
+  - stype
+  - vfrac
+  - stc
+  - soilMoistureVolumetric
+  - totalSnowDepth
+  - eastward_wind_at_surface
+  - northward_wind_at_surface
+  - f10m
+  output variables: *vars
+states:
+- input:
+    datetime: 2020-12-15T00:00:00Z
+    state variables: *vars
+    filetype: fms restart
+    datapath: Data/inputs/gfs_c12/bkg/
+    filename_core: 20201215.000000.fv_core.res.nc
+    filename_trcr: 20201215.000000.fv_tracer.res.nc
+    filename_sfcd: 20201215.000000.sfc_data.nc
+    filename_sfcw: 20201215.000000.fv_srf_wnd.res.nc
+    filename_cplr: 20201215.000000.coupler.res
+    field io names: &field_io_names
+      eastward_wind: ua
+      northward_wind: va
+      air_temperature: T
+      air_pressure_thickness: delp
+      water_vapor_mixing_ratio_wrt_moist_air: sphum
+      cloud_liquid_ice: ice_wat
+      cloud_liquid_water: liq_wat
+      ozone_mass_mixing_ratio: o3mr
+      geopotential_height_times_gravity_at_surface: phis
+      skin_temperature_at_surface: tsea
+      soilMoistureVolumetric: smc
+      totalSnowDepth: snwdph
+      eastward_wind_at_surface: u_srf
+      northward_wind_at_surface: v_srf
+  output:
+    state variables: *vars
+    filetype: fms restart
+    is restart: false
+    datapath: Data/
+    filename_nonrestart: fms_nonrestart.%yyyy%mm%dd.%hh%MM%ssz.nc
+    field io names: *field_io_names
+test:
+  reference filename: testoutput/convertstate_gfs_restart2fms_nonrestart.ref
+  test output filename: testoutput/convertstate_gfs_restart2fms_nonrestart.test.out
+  float relative tolerance: 1.0e-3

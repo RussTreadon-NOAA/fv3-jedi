@@ -9,13 +9,15 @@
 
 cmake_minimum_required( VERSION 3.3.2 FATAL_ERROR )
 
-project( fv3jedi VERSION 1.3.0 LANGUAGES C CXX Fortran )
+project( fv3jedi VERSION 1.9.0 LANGUAGES C CXX Fortran )
 
 option(OPENMP "Build fv3-jedi with OpenMP support" ON)
 
 set( CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake;${CMAKE_MODULE_PATH})
 
 set( CMAKE_DIRECTORY_LABELS "fv3-jedi" )
+
+find_package( ecbuild 3.6 REQUIRED )
 
 set( ECBUILD_DEFAULT_BUILD_TYPE Release )
 set( ENABLE_OS_TESTS           OFF CACHE BOOL "Disable OS tests" FORCE )
@@ -40,16 +42,18 @@ set( FV3JEDI_LINKER_LANGUAGE CXX )
 # Standard compiler flags
 ################################################################################
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_FORTRAN_STANDARD 08)
+set(CMAKE_FORTRAN_STANDARD_REQUIRED ON)
+set(CMAKE_FORTRAN_EXTENSIONS OFF)
+
 include( fv3jedi_extra_macros )
 option( ENABLE_FV3JEDI_DOC "Build FV3-JEDI documentation" OFF )
-
-################################################################################
-# Set default model to GFDL_atmos_cubed_sphere
-################################################################################
-
-if (NOT FV3_FORECAST_MODEL MATCHES GEOS AND NOT FV3_FORECAST_MODEL MATCHES UFS)
-  set(FV3_FORECAST_MODEL "FV3CORE")
-endif()
 
 ################################################################################
 # Dependencies
@@ -59,16 +63,16 @@ endif()
 find_package( jedicmake QUIET )
 
 # NetCDF
-find_package( NetCDF REQUIRED COMPONENTS Fortran )
+find_package( NetCDF REQUIRED COMPONENTS C Fortran )
 
 # atlas
-find_package( atlas 0.27.0 REQUIRED )
+find_package( atlas 0.35.0 REQUIRED )
 
 # oops
-find_package( oops 1.3.0 REQUIRED )
+find_package( oops 1.10.0 REQUIRED )
 
 # saber
-find_package( saber 1.3.0 REQUIRED )
+find_package( saber 1.10.0 REQUIRED )
 
 # crtm
 find_package( crtm 2.2.3 REQUIRED )
@@ -76,20 +80,21 @@ find_package( crtm 2.2.3 REQUIRED )
 # ropp
 find_package( ropp-ufo QUIET )
 
-# geos-aero
-find_package( geos-aero QUIET )
+# gsibec
+find_package( gsibec 1.4.2 QUIET )
+if( gsibec_FOUND )
+    message( STATUS "FV3-SABER block GSI is enabled" )
+    add_definitions(-DENABLE_GSIBEC=1)
+endif()
 
-# gsibclim
-find_package( gsibclim QUIET )
+# ncep-ip
+find_package( ip QUIET )
 
 # ufo
-find_package( ufo 1.3.0 REQUIRED )
-
-# femps
-find_package( femps 1.0.0 REQUIRED )
+find_package( ufo 1.10.0 REQUIRED )
 
 # vader
-find_package( vader 1.0.0 REQUIRED )
+find_package( vader 1.7.0 REQUIRED )
 
 #OpenMP
 if(OPENMP)
@@ -99,20 +104,12 @@ endif()
 # MPI
 ecbuild_find_mpi( COMPONENTS CXX Fortran REQUIRED )
 
-# Set default forecast model
-# --------------------------
-if (NOT FV3_FORECAST_MODEL MATCHES GEOS AND NOT FV3_FORECAST_MODEL MATCHES UFS)
-  set(FV3_FORECAST_MODEL "FV3CORE")
-endif()
-
 # fms
-if (FV3_FORECAST_MODEL MATCHES "FV3CORE" OR NOT FV3_FORECAST_MODEL) # OR FV3_FORECAST_MODEL MATCHES "UFS")
-  find_package( fms REQUIRED )
-endif()
-
-# fv3
-if (FV3_FORECAST_MODEL MATCHES "FV3CORE" OR NOT FV3_FORECAST_MODEL)
-  find_package( fv3 REQUIRED )
+find_package(FMS 2023.04 REQUIRED COMPONENTS R4 R8)
+if (FV3_PRECISION MATCHES DOUBLE OR NOT FV3_PRECISION)
+  add_library(fms ALIAS FMS::fms_r8)
+else()
+  add_library(fms ALIAS FMS::fms_r4)
 endif()
 
 # geos
@@ -131,7 +128,7 @@ if (FV3_FORECAST_MODEL MATCHES "GEOS")
 endif()
 
 # Linear model
-find_package( fv3jedilm 1.0.0 REQUIRED )
+find_package( fv3jedilm 1.5.0 REQUIRED )
 
 ################################################################################
 # Export package info
@@ -141,9 +138,64 @@ list( APPEND FV3JEDI_TPLS atlas atlas_f oops ufo saber )
 
 set( FV3JEDI_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
                           ${CMAKE_CURRENT_BINARY_DIR}/src
+                          ${DEPEND_LIB_ROOT}/include
+                          ${DEPEND_LIB_ROOT}/mod
+                          ${DEPEND_LIB_ROOT}/include/fv3
                           ${CMAKE_Fortran_MODULE_DIRECTORY})
-
-set( FV3JEDI_LIBRARIES fv3jedi )
+if( FV3_FORECAST_MODEL MATCHES UFS )
+  find_package(HDF5 REQUIRED COMPONENTS C HL )
+  # Use ESMF's own findESMF.cmake - if wanting
+  # the static ESMF library (we don't!), use
+  # set(USE_ESMF_STATIC_LIBS ON)
+  if( NOT DEFINED ENV{esmf_ROOT} )
+    message(FATAL_ERROR "Environmental variable esmf_ROOT not set, is ESMF module loaded?")
+  endif()
+  list(PREPEND CMAKE_MODULE_PATH "$ENV{esmf_ROOT}/cmake")
+  find_package(ESMF MODULE REQUIRED)
+  #
+  if( UFS_APP MATCHES "^(ATM)$" )
+    set( FV3JEDI_LIBRARIES fv3jedi
+                           ccpp_framework
+                           ccpp_physics )
+  elseif( UFS_APP MATCHES "^(ATMAERO)$" )
+    find_package (GFTL_SHARED REQUIRED)
+    find_package (FARGPARSE REQUIRED)
+    find_package (PFLOGGER REQUIRED)
+    find_package (MAPL REQUIRED)
+    set( FV3JEDI_LIBRARIES fv3jedi
+                           ufs_aerosols
+                           aerosols_gridcomp
+                           gocart_gridcomp
+                           ca2g_gridcomp
+                           chem_shared
+                           gocart_process
+                           du2g_gridcomp
+                           ni2g_gridcomp
+                           ss2g_gridcomp
+                           su2g_gridcomp
+                           ga_environment
+                           MAPL
+                           ccpp_framework
+                           ccpp_physics
+                           GFTL_SHARED::gftl-shared )
+  elseif( UFS_APP MATCHES "^(S2S)$" )
+    find_package( PIO 2.5.3 REQUIRED COMPONENTS C Fortran)
+    set( FV3JEDI_LIBRARIES fv3jedi
+                           gsw
+                           mom6
+                           cice
+                           cmeps
+                           cdeps
+                           PIO::PIO_Fortran
+                           PIO::PIO_C
+                           ccpp_framework
+                           ccpp_physics )
+  else()
+    message(FATAL_ERROR "fv3jedi FV3JEDI_LIBRARIES not configured for UFS_APP ${UFS_APP}")
+  endif()
+else()
+  set( FV3JEDI_LIBRARIES fv3jedi )
+endif()
 
 get_directory_property( FV3JEDI_DEFINITIONS COMPILE_DEFINITIONS )
 
@@ -160,31 +212,48 @@ endforeach()
 
 # ufs
 if (FV3_FORECAST_MODEL MATCHES UFS)
-  # TODO: fms will be seperated from UFS at some point
-  # Requires an installion of ufs-weather-model built with -DJEDI_CONTROL=ON and setting
-  # environment variable CMAKE_Platform to linux.custom to ensure INLINE_POST=OFF
-  # set CMAKE_PREFIX_PATH to include location of hpc-stack install and ufs install using
-  # semi-colon separated lists in quotes e.g.--
-  # ecbuild -DCMAKE_PREFIX_PATH="path-to/ufs-weather-model/build/install;path-to/hpc-stack/install" ...
+  # Building with the UFS is now accomplished only via the ufs-bundle
+  # which will also build the UFS as an external library with a prescribed configuration
+  # There is now a unit test which will pull data from an s3 bucket and convert it
+  # into a run directory to be used with ctests involving UFS coupling (ATM-only)
   find_package(bacio REQUIRED )
   find_package(sigio REQUIRED )
   find_package(sp REQUIRED )
   find_package(w3emc REQUIRED )
-  find_package(w3nco REQUIRED )
   find_package(nemsio REQUIRED )
-  find_package(fms REQUIRED )
-  find_package(stochastic_physics REQUIRED )
-  find_package(ccpp REQUIRED )
-  find_package(ccppphys REQUIRED )
-  find_package(fv3atm REQUIRED )
-  find_package(ufs REQUIRED )
 endif()
 
 add_subdirectory( src )
-add_subdirectory( test )
+
+################################################################################
+# Docs
+################################################################################
 
 if( ENABLE_FV3JEDI_DOC )
     add_subdirectory( Documents )
+endif()
+
+################################################################################
+# Tests
+################################################################################
+
+if( BUILD_TESTING )
+  find_package( fv3-jedi-data QUIET )
+  if( NOT fv3-jedi-data_FOUND )
+    # Set values for downloading fv3-jedi test data from tarball
+    set( fv3-jedi_data_download_url "https://bin.ssec.wisc.edu/pub/s4/CRTM/file" )
+    set( fv3-jedi_data_tag "1.9.0" )
+    set( fv3-jedi_data_tarball_name "fv3-jedi_testinput_tier_1_${fv3-jedi_data_tag}.tar.gz" )
+    set( fv3-jedi_data_tarball_hash "8ea0904eda4e4b3840536b8c744b3d9e" )
+  endif()
+
+  add_subdirectory( test )
+
+  ecbuild_add_test( TARGET fv3jedi_test_tier1_coding_norms
+                    TYPE SCRIPT
+                    COMMAND ${CMAKE_BINARY_DIR}/bin/cpplint.py
+                    ARGS --quiet --recursive ${CMAKE_CURRENT_SOURCE_DIR}/src
+                    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin )
 endif()
 
 ################################################################################

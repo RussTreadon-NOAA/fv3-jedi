@@ -1,18 +1,12 @@
-# Configuration for the linear model
-# ----------------------------------
 linear forecast:
-  # Geometry for the trajectory, increment and linear model
   geometry:
     fms initialization:
       namelist filename: Data/fv3files/input_gfs_c12.nml
       field table filename: Data/fv3files/field_table_gfdl
-    akbk: Data/fv3files/akbk127.nc4
+    akbk: Data/inputs/fv3files/akbk127.nc4
     npx: 13
     npy: 13
     npz: 127
-    field metadata override: Data/fieldmetadata/gfs-restart.yaml
-
-  # Linear model config
   linear model:
     name: FV3JEDITLM
     namelist filename: Data/fv3files/input_gfs_c12.nml
@@ -21,29 +15,16 @@ linear forecast:
     lm_do_dyn: 1
     lm_do_trb: 0
     lm_do_mst: 0
-    tlm variables: [u,v,T,DELP,sphum,ice_wat,liq_wat,o3mr]
-    trajectory:
-      model variables: [u,v,T,DELP,sphum,ice_wat,liq_wat,o3mr]
-
-# Configuration for the model
-# ---------------------------
 forecast:
-
-  # Forecast length
   forecast length: PT1H
-
-  # Geometry for the forecast model
   geometry:
     fms initialization:
       namelist filename: Data/fv3files/input_gfs_c12.nml
       field table filename: Data/fv3files/field_table_gfdl
-    akbk: Data/fv3files/akbk127.nc4
+    akbk: Data/inputs/fv3files/akbk127.nc4
     npx: 13
     npy: 13
     npz: 127
-    field metadata override: Data/fieldmetadata/gfs-restart.yaml
-
-  # Model config
   model:
     name: FV3LM
     use internal namelist: true
@@ -51,9 +32,20 @@ forecast:
     lm_do_dyn: 1
     lm_do_trb: 0
     lm_do_mst: 0
-    model variables: [u,v,ua,va,T,DELP,sphum,ice_wat,liq_wat,o3mr,phis]
-
-  # Model initial condition
+    model variables:
+    - eastward_wind
+    - northward_wind
+    - air_temperature
+    - air_pressure_thickness
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - cloud_liquid_ice
+    - cloud_liquid_water
+    - ozone_mass_mixing_ratio
+    - geopotential_height_times_gravity_at_surface
+    datapath: Data/inputs/gfs_c12/bkg/
+    filename_core: 20201214.210000.fv_core.res.nc
+    filename_core_out: checkpoint.adjointforecast.fv_core.res.nc
+    datapath_out: Data/forecast
   initial condition:
     filetype: fms restart
     datetime: 2020-12-14T21:00:00Z
@@ -63,9 +55,26 @@ forecast:
     filename_sfcd: 20201214.210000.sfc_data.nc
     filename_sfcw: 20201214.210000.fv_srf_wnd.res.nc
     filename_cplr: 20201214.210000.coupler.res
-    state variables: [u,v,ua,va,T,DELP,sphum,ice_wat,liq_wat,o3mr,phis]
-
-# Optionally write the adjoint initial condition
+    state variables:
+    - eastward_wind
+    - northward_wind
+    - air_temperature
+    - air_pressure_thickness
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - cloud_liquid_ice
+    - cloud_liquid_water
+    - ozone_mass_mixing_ratio
+    - geopotential_height_times_gravity_at_surface
+    field io names: &field_io_names
+      eastward_wind: ua
+      northward_wind: va
+      air_temperature: T
+      air_pressure_thickness: delp
+      water_vapor_mixing_ratio_wrt_moist_air: sphum
+      cloud_liquid_ice: ice_wat
+      cloud_liquid_water: liq_wat
+      ozone_mass_mixing_ratio: o3mr
+      geopotential_height_times_gravity_at_surface: phis
   output:
     filetype: fms restart
     datapath: Data/adjointforecast
@@ -74,22 +83,16 @@ forecast:
     filename_sfcd: nlmforecast.sfc_data.nc
     filename_sfcw: nlmforecast.fv_srf_wnd.res.nc
     filename_cplr: nlmforecast.coupler.res
-
-# Configuration for the forecast aspect
-# -------------------------------------
+    field io names: *field_io_names
 forecast aspect:
-
-  # Verification state
   verification resolution:
     fms initialization:
       namelist filename: Data/fv3files/input_gfs_c12.nml
       field table filename: Data/fv3files/field_table_gfdl
-    akbk: Data/fv3files/akbk127.nc4
+    akbk: Data/inputs/fv3files/akbk127.nc4
     npx: 13
     npy: 13
     npz: 127
-    field metadata override: Data/fieldmetadata/gfs-restart.yaml
-
   verification state:
     filetype: fms restart
     datetime: 2020-12-14T22:00:00Z
@@ -99,17 +102,20 @@ forecast aspect:
     filename_sfcd: 20201214.220000.sfc_data.nc
     filename_sfcw: 20201214.220000.fv_srf_wnd.res.nc
     filename_cplr: 20201214.220000.coupler.res
-    state variables: [u,v,ua,va,T,DELP,sphum,ice_wat,liq_wat,o3mr,phis]
-
-  # Norm definition
+    state variables:
+    - eastward_wind
+    - northward_wind
+    - air_temperature
+    - air_pressure_thickness
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - cloud_liquid_ice
+    - cloud_liquid_water
+    - ozone_mass_mixing_ratio
+    - geopotential_height_times_gravity_at_surface
+    field io names: *field_io_names
   norm:
     kind: l2
-
-# Configuration for the adjoint forecast
-# --------------------------------------
 adjoint forecast:
-
-# Optionally write the adjoint initial condition
   adjoint initial condition output:
     filetype: fms restart
     datapath: Data/adjointforecast
@@ -118,8 +124,7 @@ adjoint forecast:
     filename_sfcd: adjointforecast_initial.sfc_data.nc
     filename_sfcw: adjointforecast_initial.fv_srf_wnd.res.nc
     filename_cplr: adjointforecast_initial.coupler.res
-
-# Output adjoint forecast states
+    field io names: *field_io_names
   adjoint forecast output:
     filetype: fms restart
     datapath: Data/adjointforecast
@@ -128,7 +133,7 @@ adjoint forecast:
     filename_sfcd: adjointforecast_final.sfc_data.nc
     filename_sfcw: adjointforecast_final.fv_srf_wnd.res.nc
     filename_cplr: adjointforecast_final.coupler.res
-
+    field io names: *field_io_names
 test:
   reference filename: testoutput/adjointforecast.ref
   test output filename: testoutput/adjointforecast.test.out

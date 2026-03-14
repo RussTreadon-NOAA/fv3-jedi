@@ -1,11 +1,6 @@
-Number of input BUMP components for stream_function: 2
-Number of input BUMP components for velocity_potential: 2
-Number of input BUMP components for air_temperature: 2
-Number of input BUMP components for relative_humidity: 2
-Number of input BUMP components for cloud_liquid_water: 2
-Number of input BUMP components for ozone_mass_mixing_ratio: 2
-Number of input BUMP components for surface_pressure: 2
-Norm of input BUMP parameter nicas_a - 1: 8.2524223146832654e-01
-Norm of input BUMP parameter nicas_a - 2: 2.3267510311241063e-01
-Norm of input BUMP parameter nicas_norm - 1: 1.0307421110465391e+00
-Norm of input BUMP parameter nicas_norm - 2: 1.0074085678839935e+00
+Norm of input parameter rh - 1: 3.8608632678093980e+06
+Norm of input parameter rh - 2: 1.5702751836839134e+06
+Norm of input parameter nicas_a - 1: 8.5111429453240905e-01
+Norm of input parameter nicas_a - 2: 2.5185227887512729e-01
+Norm of input parameter nicas_norm - 1: 1.0164172828478737e+00
+Norm of input parameter nicas_norm - 2: 1.0105455907469969e+00

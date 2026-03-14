@@ -2,40 +2,68 @@ input geometry:
   fms initialization:
     namelist filename: Data/fv3files/fmsmpp.nml
     field table filename: Data/fv3files/field_table_gfdl
-  akbk: Data/fv3files/akbk127.nc4
-  layout: [1,2]
+  akbk: Data/inputs/fv3files/akbk127.nc4
+  layout:
+  - 1
+  - 2
   npx: 13
   npy: 13
   npz: 127
-  field metadata override: Data/fieldmetadata/gfs-restart.yaml
 output geometry:
-  akbk: Data/fv3files/akbk127.nc4
-  layout: [1,2]
+  akbk: Data/inputs/fv3files/akbk127.nc4
+  layout:
+  - 1
+  - 2
   npx: 13
   npy: 13
   npz: 127
-  field metadata override: Data/fieldmetadata/gfs-restart.yaml
-
 variable change:
   variable change name: Control2Analysis
-  output variables: [psi,chi,t,ps,rh,liq_wat,ice_wat,o3mr]
+  output variables:
+  - air_horizontal_streamfunction
+  - air_horizontal_velocity_potential
+  - air_temperature
+  - air_pressure_at_surface
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_water
+  - cloud_liquid_ice
+  - ozone_mass_mixing_ratio
   do inverse: true
   femps_iterations: 60
   femps_ngrids: 2
-  femps_path2fv3gridfiles: Data/femps/
+  femps_path2fv3gridfiles: Data/inputs/femps/
   femps_checkconvergence: false
-
 states:
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
-    state variables: &readvars [ua,va,t,delp,sphum,liq_wat,ice_wat,o3mr]
+    state variables: &readvars
+    - eastward_wind
+    - northward_wind
+    - air_temperature
+    - air_pressure_thickness
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - cloud_liquid_water
+    - cloud_liquid_ice
+    - ozone_mass_mixing_ratio
     datapath: Data/inputs/gfs_c12/mem001/
     filename_core: _YYYY__MM__DD_._HH_0000.fv_core.res.nc
     filename_trcr: _YYYY__MM__DD_._HH_0000.fv_tracer.res.nc
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: &field_io_names
+      air_horizontal_streamfunction: psi
+      air_horizontal_velocity_potential: chi
+      air_temperature: T
+      air_pressure_at_surface: ps
+      water_vapor_mixing_ratio_wrt_moist_air: sphum
+      cloud_liquid_water: liq_wat
+      cloud_liquid_ice: ice_wat
+      ozone_mass_mixing_ratio: o3mr
+      eastward_wind: ua
+      northward_wind: va
+      air_pressure_thickness: delp
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem001/
@@ -44,7 +72,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
@@ -55,6 +83,7 @@ states:
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: *field_io_names
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem002/
@@ -63,7 +92,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
@@ -74,6 +103,7 @@ states:
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: *field_io_names
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem003/
@@ -82,7 +112,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
@@ -93,6 +123,7 @@ states:
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: *field_io_names
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem004/
@@ -101,7 +132,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
@@ -112,6 +143,7 @@ states:
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: *field_io_names
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem005/
@@ -120,7 +152,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
@@ -131,6 +163,7 @@ states:
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: *field_io_names
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem006/
@@ -139,7 +172,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
@@ -150,6 +183,7 @@ states:
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: *field_io_names
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem007/
@@ -158,7 +192,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
@@ -169,6 +203,7 @@ states:
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: *field_io_names
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem008/
@@ -177,7 +212,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
@@ -188,6 +223,7 @@ states:
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: *field_io_names
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem009/
@@ -196,7 +232,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 - input:
     datetime: _YYYY_-_MM_-_DD_T_HH_:00:00Z
     filetype: fms restart
@@ -207,6 +243,7 @@ states:
     filename_sfcd: _YYYY__MM__DD_._HH_0000.sfc_data.nc
     filename_sfcw: _YYYY__MM__DD_._HH_0000.fv_srf_wnd.res.nc
     filename_cplr: _YYYY__MM__DD_._HH_0000.coupler.res
+    field io names: *field_io_names
   output:
     filetype: fms restart
     datapath: Data/staticb/balanced/mem010/
@@ -215,7 +252,7 @@ states:
     filename_sfcd: sfc_data.nc
     filename_sfcw: fv_srf_wnd.res.nc
     filename_cplr: coupler.res
-
+    field io names: *field_io_names
 test:
   reference filename: testoutput/staticb_ens-to-psichi__YYYY__MM__DD__HH__gfs.ref
   test output filename: testoutput/staticb_ens-to-psichi__YYYY__MM__DD__HH__gfs.test.out

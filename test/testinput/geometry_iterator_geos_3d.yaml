@@ -2,12 +2,19 @@ geometry:
   fms initialization:
     namelist filename: Data/fv3files/fmsmpp.nml
     field table filename: Data/fv3files/field_table_gmao
-  akbk: Data/fv3files/akbk72.nc4
+  akbk: Data/inputs/fv3files/akbk72.nc4
   npx: 13
   npy: 13
   npz: 72
-  field metadata override: Data/fieldmetadata/geos.yaml
   iterator dimension: 3
-inc variables: [ua,va,t,delp,ps,q,qi,ql,o3ppmv]
+inc variables:
+- eastward_wind
+- northward_wind
+- air_temperature
+- air_pressure_thickness
+- water_vapor_mixing_ratio_wrt_moist_air
+- cloud_liquid_ice
+- cloud_liquid_water
+- mole_fraction_of_ozone_in_air
 increment test:
   date: 2018-04-14T21:00:00Z
