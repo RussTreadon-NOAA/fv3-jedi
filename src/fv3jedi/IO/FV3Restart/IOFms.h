@@ -9,6 +9,7 @@
 
 #include <ostream>
 #include <string>
+#include <vector>
 
 #include "oops/util/DateTime.h"
 #include "oops/util/parameters/OptionalParameter.h"
@@ -26,11 +27,20 @@ class IOFmsParameters : public IOParametersBase {
   OOPS_CONCRETE_PARAMETERS(IOFmsParameters, IOParametersBase)
 
  public:
+  // Are files to be read restarts or not?
+  oops::Parameter<bool> is_restart{"is restart",
+                                   "is restart",
+                                   true, this};
+
   // Data path for files being read
   oops::Parameter<std::string> datapath{"datapath", "path to location of files to be read", "./",
                                         this};
 
-  // Filenames to be read
+  // Filename to be read or written
+  oops::Parameter<std::string> filename_nonrestart{"filename_nonrestart", "filename_nonrestart",
+                                        "fms_nonrestart.nc", this};
+
+  // Restart filenames to be read
   oops::Parameter<std::string> filename_core{"filename_core", "filename_core",
                                              "fv_core.res.nc", this};
   oops::Parameter<std::string> filename_trcr{"filename_trcr", "filename_trcr",
@@ -73,12 +83,18 @@ class IOFmsParameters : public IOParametersBase {
   // Optionally the config may contain member
   oops::OptionalParameter<int> member{"member", "ensemble member number", this};
 
-  // Things BUMP puts in write config not needed in IO but specified to avoid failures
-  oops::OptionalParameter<std::string> bumpparameter{"parameter", "bump parameter", this};
-  oops::OptionalParameter<util::DateTime> bumpdatetime{"date", "bump datetime", this};
-
   // Let user set the calendar type
   oops::Parameter<int> calendar_type{"calendar type", "calendar type", 2, this};
+
+  // Ignore checksum for FMS restarts?
+  oops::Parameter<bool> ignore_checksum{"ignore checksum",
+                                        "whether to ignore restart checksums",
+                                        true, this};
+
+  // Write only a subset of fields?
+  oops::OptionalParameter<std::vector<std::string>> fields_to_write{"fields to write",
+                                                                    "names of fields to write",
+                                                                    this};
 };
 
 // -------------------------------------------------------------------------------------------------
@@ -101,6 +117,7 @@ class IOFms : public IOBase, private util::ObjectCounter<IOFms> {
 
  private:
   F90iofms objectKeyForFortran_;
+  const Geometry & geom_;
   void print(std::ostream &) const override;
 };
 

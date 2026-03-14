@@ -19,23 +19,20 @@
 #include "fv3jedi/Tlm/Tlm.h"
 #include "fv3jedi/Tlm/Tlm.interface.h"
 #include "fv3jedi/Tlm/Traj.interface.h"
-#include "fv3jedi/Utilities/Traits.h"
 
 namespace fv3jedi {
 
 // -------------------------------------------------------------------------------------------------
-static oops::interface::LinearModelMaker<Traits, Tlm> makerTLM_("FV3JEDITLM");
-// -------------------------------------------------------------------------------------------------
-Tlm::Tlm(const Geometry & resol, const Parameters_ & params) : keySelf_(0), tstep_(), trajmap_(),
-  linvars_(resol.fieldsMetaData().getLongNameFromAnyName(params.tlmVariables))
+Tlm::Tlm(const Geometry & geom, const eckit::Configuration & config)
+  : geom_(geom), keySelf_(0), tstep_(), trajmap_()
 {
   oops::Log::trace() << "Tlm::Tlm starting" << std::endl;
 
   // Store time step
-  tstep_ = params.tstep;
+  tstep_ = util::Duration(config.getString("tstep"));
 
   // Implementation
-  fv3jedi_tlm_create_f90(keySelf_, resol.toFortran(), params.toConfiguration());
+  fv3jedi_tlm_create_f90(keySelf_, geom_.toFortran(), config);
 
   oops::Log::trace() << "Tlm::Tlm done" << std::endl;
 }
@@ -56,14 +53,11 @@ Tlm::~Tlm() {
 void Tlm::setTrajectory(const State & xx, State & xlr, const ModelBias & bias) {
   oops::Log::trace() << "Tlm::setTrajectory starting" << std::endl;
 
-  // Interpolate to resolution of the trajectory
-  xlr.changeResolution(xx);
-
   // Set trajectory
   int keyTraj = 0;
   fv3jedi_traj_set_f90(keyTraj, xlr.toFortran());
   ASSERT(keyTraj != 0);
-  trajmap_[xx.validTime()] = keyTraj;
+  trajmap_[xlr.validTime()] = keyTraj;
 
   oops::Log::trace() << "Tlm::setTrajectory done" << std::endl;
 }
@@ -71,8 +65,17 @@ void Tlm::setTrajectory(const State & xx, State & xlr, const ModelBias & bias) {
 void Tlm::initializeTL(Increment & dx) const {
   oops::Log::trace() << "Tlm::initializeTL starting" << std::endl;
 
+  // Get traj index
+  trajICst itra = trajmap_.find(dx.validTime());
+
+  // Check traj is available
+  if (itra == trajmap_.end()) {
+    oops::Log::error() << "Tlm: trajectory not available at time " << dx.validTime() << std::endl;
+    ABORT("Tlm: trajectory not available");
+  }
+
   // Implementation
-  fv3jedi_tlm_initialize_tl_f90(keySelf_, dx.toFortran());
+  fv3jedi_tlm_initialize_tl_f90(keySelf_, geom_.toFortran(), dx.toFortran(), itra->second);
 
   oops::Log::trace() << "Tlm::initializeTL done" << std::endl;
 }
@@ -90,7 +93,7 @@ void Tlm::stepTL(Increment & dx, const ModelBiasIncrement &) const {
   }
 
   // Implementation
-  fv3jedi_tlm_step_tl_f90(keySelf_, dx.toFortran(), itra->second);
+  fv3jedi_tlm_step_tl_f90(keySelf_, geom_.toFortran(), dx.toFortran(), itra->second);
 
   // Tick increment clock
   dx.validTime() += tstep_;
@@ -102,7 +105,7 @@ void Tlm::finalizeTL(Increment & dx) const {
   oops::Log::trace() << "Tlm::finalizeTL starting" << std::endl;
 
   // Implementation
-  fv3jedi_tlm_finalize_tl_f90(keySelf_, dx.toFortran());
+  fv3jedi_tlm_finalize_tl_f90(keySelf_, geom_.toFortran(), dx.toFortran());
 
   oops::Log::trace() << "Tlm::finalizeTL done" << std::endl;
 }
@@ -110,8 +113,17 @@ void Tlm::finalizeTL(Increment & dx) const {
 void Tlm::initializeAD(Increment & dx) const {
   oops::Log::trace() << "Tlm::initializeAD starting" << std::endl;
 
+  // Get traj index
+  trajICst itra = trajmap_.find(dx.validTime());
+
+  // Check traj is available
+  if (itra == trajmap_.end()) {
+    oops::Log::error() << "Tlm: trajectory not available at time " << dx.validTime() << std::endl;
+    ABORT("Tlm: trajectory not available");
+  }
+
   // Implementation
-  fv3jedi_tlm_initialize_ad_f90(keySelf_, dx.toFortran());
+  fv3jedi_tlm_initialize_ad_f90(keySelf_, geom_.toFortran(), dx.toFortran(), itra->second);
 
   oops::Log::trace() << "Tlm::initializeAD done" << std::endl;
 }
@@ -132,7 +144,7 @@ void Tlm::stepAD(Increment & dx, ModelBiasIncrement &) const {
   }
 
   // Implementation
-  fv3jedi_tlm_step_ad_f90(keySelf_, dx.toFortran(), itra->second);
+  fv3jedi_tlm_step_ad_f90(keySelf_, geom_.toFortran(), dx.toFortran(), itra->second);
 
   oops::Log::trace() << "Tlm::stepAD done" << std::endl;
 }
@@ -141,7 +153,7 @@ void Tlm::finalizeAD(Increment & dx) const {
   oops::Log::trace() << "Tlm::finalizeAD starting" << std::endl;
 
   // Implementation
-  fv3jedi_tlm_finalize_ad_f90(keySelf_, dx.toFortran());
+  fv3jedi_tlm_finalize_ad_f90(keySelf_, geom_.toFortran(), dx.toFortran());
 
   oops::Log::trace() << "Tlm::finalizeAD done" << std::endl;
 }

@@ -59,7 +59,7 @@ subroutine fv3jedi_state_create_c(c_key_self, c_key_geom, c_vars, c_time) &
 implicit none
 integer(c_int), intent(inout)  :: c_key_self
 integer(c_int), intent(in)     :: c_key_geom !< Geometry
-type(c_ptr), value, intent(in) :: c_vars     !< List of variables
+type(c_ptr), value, intent(in) :: c_vars     !< List of all variables
 type(c_ptr), value, intent(in) :: c_time     !< Datetime
 
 type(fv3jedi_state), pointer :: self
@@ -72,7 +72,6 @@ call fv3jedi_state_registry%add(c_key_self)
 call fv3jedi_state_registry%get(c_key_self,self)
 
 vars = oops_variables(c_vars)
-
 ! Create Fortran pointer to datetime
 call c_f_datetime(c_time, self%time)
 
@@ -149,44 +148,25 @@ end subroutine fv3jedi_state_axpy_c
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine fv3jedi_state_add_increment_c(c_key_self,c_key_rhs) &
+subroutine fv3jedi_state_add_increment_c(c_key_self,c_key_rhs,c_key_geom) &
            bind(c,name='fv3jedi_state_add_increment_f90')
 
 implicit none
 integer(c_int), intent(in) :: c_key_self
 integer(c_int), intent(in) :: c_key_rhs
+integer(c_int), intent(in) :: c_key_geom
+
 type(fv3jedi_state), pointer :: self
 type(fv3jedi_increment), pointer :: rhs
+type(fv3jedi_geom),  pointer :: geom
 
 call fv3jedi_state_registry%get(c_key_self,self)
 call fv3jedi_increment_registry%get(c_key_rhs,rhs)
+call fv3jedi_geom_registry%get(c_key_geom,geom)
 
-call self%add_increment(rhs%fields)
+call self%add_increment(rhs%fields,geom)
 
 end subroutine fv3jedi_state_add_increment_c
-
-! --------------------------------------------------------------------------------------------------
-
-subroutine fv3jedi_state_change_resol_c(c_key_state,c_key_geom,c_key_rhs,c_key_geom_rhs) &
-           bind(c,name='fv3jedi_state_change_resol_f90')
-
-implicit none
-integer(c_int), intent(in) :: c_key_state
-integer(c_int), intent(in) :: c_key_geom
-integer(c_int), intent(in) :: c_key_rhs
-integer(c_int), intent(in) :: c_key_geom_rhs
-
-type(fv3jedi_state), pointer :: self, other
-type(fv3jedi_geom),  pointer :: geom, geom_other
-
-call fv3jedi_state_registry%get(c_key_state,self)
-call fv3jedi_geom_registry%get(c_key_geom, geom)
-call fv3jedi_state_registry%get(c_key_rhs, other)
-call fv3jedi_geom_registry%get(c_key_geom_rhs, geom_other)
-
-call self%change_resol(geom, other, geom_other)
-
-end subroutine fv3jedi_state_change_resol_c
 
 ! --------------------------------------------------------------------------------------------------
 
@@ -264,20 +244,28 @@ implicit none
 integer(c_int),               intent(in)    :: c_key_self
 integer(c_int),               intent(in)    :: c_f_num
 integer(c_int),               intent(in)    :: c_f_name_len
-character(len=1,kind=c_char), intent(inout) :: c_f_name(c_f_name_len)
+character(len=1,kind=c_char), intent(inout) :: c_f_name(c_f_name_len + 1)
 real(c_double),               intent(inout) :: c_minmaxrms(3)
 
 type(fv3jedi_state), pointer :: self
 character(len=field_clen) :: field_name
-integer :: n
+integer :: n, trunc_name_len
 
 call fv3jedi_state_registry%get(c_key_self,self)
 
 call self%minmaxrms(c_f_num, field_name, c_minmaxrms)
 
-do n = 1,c_f_name_len
+! logic from oops f_c_string, but without allocation of c string array
+trunc_name_len = min(len_trim(field_name), c_f_name_len)
+do n = 1,trunc_name_len
   c_f_name(n) = field_name(n:n)
 enddo
+
+! if field_name is shorter than C char array, pad with spaces before adding null terminator
+do n = trunc_name_len+1,c_f_name_len
+  c_f_name(n) = ' '
+enddo
+c_f_name(c_f_name_len+1) = c_null_char
 
 end subroutine fv3jedi_state_getminmaxrms_c
 
@@ -304,6 +292,8 @@ afieldset = atlas_fieldset(c_afieldset)
 
 call self%to_fieldset(geom, vars, afieldset)
 
+call afieldset%final()
+
 end subroutine fv3jedi_state_to_fieldset_c
 
 ! --------------------------------------------------------------------------------------------------
@@ -328,6 +318,8 @@ vars = oops_variables(c_vars)
 afieldset = atlas_fieldset(c_afieldset)
 
 call self%from_fieldset(geom, vars, afieldset)
+
+call afieldset%final()
 
 end subroutine fv3jedi_state_from_fieldset_c
 
@@ -372,6 +364,53 @@ call self%serialize(c_vsize,c_vect_inc)
 
 end subroutine fv3jedi_state_serialize_c
 
+! --------------------------------------------------------------------------------------------------
+subroutine fv3jedi_state_deserializeSection_c(c_key_self,c_vsize,c_vect_inc,isc,iec,jsc,jec,isc_sg,iec_sg,jsc_sg,jec_sg,local_ind) &
+           bind(c,name='fv3jedi_state_deserializeSection_f90')
+implicit none
+
+! Passed variables
+integer(c_int),intent(in) :: c_key_self           !< State
+integer(c_int),intent(in) :: c_vsize              !< Size
+real(c_double),intent(in) :: c_vect_inc(c_vsize) !< Vector
+integer(c_int),intent(in) :: isc                  !< Size
+integer(c_int),intent(in) :: iec                  !< Size
+integer(c_int),intent(in) :: jsc                  !< Size
+integer(c_int),intent(in) :: jec                  !< Size
+integer(c_int),intent(in) :: isc_sg               !< Size
+integer(c_int),intent(in) :: iec_sg               !< Size
+integer(c_int),intent(in) :: jsc_sg               !< Size
+integer(c_int),intent(in) :: jec_sg               !< Size
+integer(c_int),intent(inout) :: local_ind          !< Size
+
+type(fv3jedi_state),pointer :: self
+! Local variables
+integer :: ind, var, i, j, k
+
+call fv3jedi_state_registry%get(c_key_self, self)
+! Call Fortran
+
+! Initialize
+ind = 0
+! Copy
+do var = 1, self%nf
+  do k = 1,self%fields(var)%npz
+    do j = jsc,jec
+      do i = isc,iec
+        ind = ind + 1  ! need to update index in bigger array
+        if((i >= isc_sg) .and. (i <= iec_sg)) then  ! probably a faster way to do this. 
+          if((j >= jsc_sg) .and. (j <= jec_sg)) then   
+            self%fields(var)%array(i, j, k) = c_vect_inc(ind)
+            local_ind = local_ind + 1
+          endif
+        endif
+      enddo
+    enddo
+  enddo
+enddo
+local_ind = ind
+
+end subroutine fv3jedi_state_deserializeSection_c
 ! --------------------------------------------------------------------------------------------------
 
 subroutine fv3jedi_state_deserialize_c(c_key_self,c_vsize,c_vect_inc,c_index) &

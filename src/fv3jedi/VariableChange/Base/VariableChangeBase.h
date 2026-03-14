@@ -14,7 +14,9 @@
 
 #include <boost/noncopyable.hpp>
 
-#include "oops/base/VariableChangeParametersBase.h"
+#include "fv3jedi/VariableChange/VaderCookbook.h"
+
+#include "oops/base/ParameterTraitsVariables.h"
 #include "oops/base/Variables.h"
 #include "oops/util/AssociativeContainers.h"
 #include "oops/util/parameters/ConfigurationParameter.h"
@@ -32,10 +34,15 @@ namespace fv3jedi {
 
 // -------------------------------------------------------------------------------------------------
 
-class VariableChangeParametersBase : public oops::VariableChangeParametersBase {
-  OOPS_ABSTRACT_PARAMETERS(VariableChangeParametersBase, oops::VariableChangeParametersBase)
+class VariableChangeParametersBase : public oops::Parameters {
+  OOPS_ABSTRACT_PARAMETERS(VariableChangeParametersBase, oops::Parameters)
+
  public:
+  oops::OptionalParameter<oops::Variables> inputVariables{"input variables", this};
+  oops::OptionalParameter<oops::Variables> outputVariables{"output variables", this};
   oops::OptionalParameter<std::string> name{"variable change name", this};
+  oops::Parameter<std::map<std::string, std::vector<std::string>>> vaderCustomCookbook{
+    "vader custom cookbook", vaderFV3CustomCookbook(), this};
   oops::Parameter<vader::VaderParameters> vader{"vader", {}, this};
 };
 
@@ -67,11 +74,15 @@ class VariableChangeFactory;
 
 // -------------------------------------------------------------------------------------------------
 
-class VariableChangeParametersWrapper : public oops::VariableChangeParametersBase {
-  OOPS_CONCRETE_PARAMETERS(VariableChangeParametersWrapper, oops::VariableChangeParametersBase)
+class VariableChangeParametersWrapper : public oops::Parameters {
+  OOPS_CONCRETE_PARAMETERS(VariableChangeParametersWrapper, oops::Parameters)
  public:
   oops::PolymorphicParameter<fv3jedi::VariableChangeParametersBase, VariableChangeFactory>
     variableChangeParameters{"variable change name", "default", this};
+  // During the transition to Vader it is useful to run with either just vader or just the fv3-jedi
+  // variable transforms to avoid not knowing which part of the code is doing the transforms
+  oops::Parameter<bool> run_vader{"run vader", true, this};
+  oops::Parameter<bool> run_fv3jedi{"run fv3jedi", true, this};
 };
 
 // -------------------------------------------------------------------------------------------------

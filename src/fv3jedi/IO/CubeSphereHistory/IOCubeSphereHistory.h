@@ -79,9 +79,28 @@ class IOCubeSphereHistoryParameters : public IOParametersBase {
   // Optionally the config may contain member
   oops::OptionalParameter<int> member{"member", "ensemble member number", this};
 
-  // Things BUMP puts in write config not needed in IO but specified to avoid failures
-  oops::OptionalParameter<std::string> bumpparameter{"parameter", "bump parameter", this};
-  oops::OptionalParameter<util::DateTime> bumpdatetime{"date", "bump datetime", this};
+  // Optional list of fields to write out
+  oops::OptionalParameter<std::vector<std::string>> fieldsToWrite{"fields to write",
+                                                                  "names of the fields to write",
+                                                                  this};
+
+  // Floating point precision in bytes for NetCDF write
+  oops::OptionalParameter<int> floatPrecision{"float precision in bytes",
+                                              "number of bytes of floating point precision",
+                                              this};
+
+  // Compute pressure at the edges from pressure at the surface (instead of reading it)
+  oops::OptionalParameter<bool> computeP{"compute edge pressure from surface pressure",
+                                         "compute edge pressure from surface pressure",
+                                         this};
+
+  // Maximum allowable difference in the Geometry lat/lon compared to the file lat/lon
+  // In practice users should expect differences order 1e-12 or smaller if everything
+  // is in double precision. In practice models may produce files at lower precision.
+  // Differences smaller than 1e-6 should be sufficient to assess that the geometry of
+  // the model producing the file being read is the same at the one in fv3-jedi.
+  oops::Parameter<double> maxDiff{"max allowable geometry difference",
+                                  "max allowable geometry difference", 1e-6, this};
 };
 
 // -------------------------------------------------------------------------------------------------

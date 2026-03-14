@@ -13,12 +13,15 @@
 
 #include <boost/ptr_container/ptr_vector.hpp>
 
-#include "oops/base/LinearVariableChangeParametersBase.h"
+#include "eckit/config/Configuration.h"
+
 #include "oops/util/parameters/OptionalParameter.h"
 #include "oops/util/parameters/Parameter.h"
 #include "oops/util/parameters/Parameters.h"
 #include "oops/util/parameters/RequiredParameter.h"
 #include "oops/util/Printable.h"
+
+#include "vader/vader.h"
 
 #include "fv3jedi/FieldMetadata/FieldsMetadata.h"
 #include "fv3jedi/LinearVariableChange/Base/LinearVariableChangeBase.h"
@@ -31,9 +34,7 @@ class LinearVariableChange : public util::Printable {
  public:
   static const std::string classname() {return "fv3jedi::LinearVariableChange";}
 
-  typedef LinearVariableChangeParametersWrapper Parameters_;
-
-  explicit LinearVariableChange(const Geometry &, const Parameters_ &);
+  explicit LinearVariableChange(const Geometry &, const eckit::Configuration &);
   ~LinearVariableChange();
 
   void changeVarTraj(const State &, const oops::Variables &);
@@ -45,10 +46,13 @@ class LinearVariableChange : public util::Printable {
 
  private:
   void print(std::ostream &) const override;
-  Parameters_ params_;
+  void initVaderTLAD(oops::Variables &) const;
+  LinearVariableChangeParametersWrapper params_;
   const Geometry & geom_;
   std::unique_ptr<LinearVariableChangeBase> linearVariableChange_;
   FieldsMetadata fieldsMetadata_;
+  std::unique_ptr<vader::Vader> vader_;
+  mutable oops::Variables varsVaderPopulates_;
 };
 
 // -------------------------------------------------------------------------------------------------

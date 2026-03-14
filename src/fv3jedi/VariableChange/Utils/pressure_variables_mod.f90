@@ -5,7 +5,7 @@
 
 module pressure_vt_mod
 
-use fv3jedi_constants_mod, only: kappa, grav, rad2deg, constoz
+use fv3jedi_constants_mod, only: constant
 use fv3jedi_geom_mod, only: fv3jedi_geom, pedges2pmidlayer
 use fv3jedi_kinds_mod, only: kind_real
 
@@ -13,15 +13,13 @@ implicit none
 private
 
 public delp_to_pe_p_logp
-public pe_to_pkz
-public ps_to_pkz
-public pe_to_delp
-public delp_to_pe
-public pe_to_pk
 public ps_to_delp
-public ps_to_pe
 public ps_to_delp_tl
 public ps_to_delp_ad
+public ps_to_p_tl
+public ps_to_p_ad
+public ps_to_pe_tl
+public ps_to_pe_ad
 public tropprs
 public tropprs_th
 
@@ -31,169 +29,57 @@ contains
 ! Pressure thickness to pressure (edge), pressure (mid) and log p (mid) -----
 !----------------------------------------------------------------------------
 
-subroutine delp_to_pe_p_logp(geom,delp,pe,p,logp)
+subroutine delp_to_pe_p_logp(geom,delp,pe,p,logp,logpe,pkz)
 
  type(fv3jedi_geom)  , intent(in ) :: geom !Geometry for the model
  real(kind=kind_real), intent(in ) :: delp(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Pressure thickness
  real(kind=kind_real), intent(out) ::   pe(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1) !Pressure edge/interface
  real(kind=kind_real), intent(out) ::    p(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Pressure mid point
- real(kind=kind_real), optional, intent(out) :: logp(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Log of pressure mid point
+ real(kind=kind_real), optional, intent(out) :: logp(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)    !Log of pressure mid point
+ real(kind=kind_real), optional, intent(out) :: logpe(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1) !Log of pressure edge
+ real(kind=kind_real), optional, intent(out) :: pkz(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)    !Log of pressure mid point
 
  !Locals
  integer :: isc,iec,jsc,jec,i,j,k
+ real(kind=kind_real) :: peln(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1)
+ real(kind=kind_real) ::   pk(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1)
+ real(kind=kind_real) :: kappa
 
  isc = geom%isc
  iec = geom%iec
  jsc = geom%jsc
  jec = geom%jec
 
+ kappa = constant('kappa')
+
  !Pressure at layer edge
- call delp_to_pe(geom,delp,pe)
+ pe(isc:iec,jsc:jec,1) = geom%ptop
+ do k = 2,geom%npz+1
+   pe(isc:iec,jsc:jec,k) = pe(isc:iec,jsc:jec,k-1) + delp(isc:iec,jsc:jec,k-1)
+ enddo
 
  !Midpoint pressure
  do i = isc,iec
    do j = jsc,jec
-       call pedges2pmidlayer(geom%npz,'Philips',pe(i,j,:),p(i,j,:))
+       call pedges2pmidlayer(geom%npz,'Philips',pe(i,j,:),kappa,p(i,j,:))
    enddo
  enddo
 
  if (present(logp)) then
    !Log pressure
    logp(isc:iec,jsc:jec,:) = log(p(isc:iec,jsc:jec,:))
+   logpe(isc:iec,jsc:jec,:) = log(pe(isc:iec,jsc:jec,:))
  endif
 
+ if (present(pkz)) then
+  peln = log(pe)
+  pk = exp(kappa*peln)
+  do k=1,geom%npz
+    pkz(:,:,k) = (pk(:,:,k+1)-pk(:,:,k)) / (kappa*(peln(:,:,k+1)-peln(:,:,k)))
+  enddo
+endif
+
 end subroutine delp_to_pe_p_logp
-
-!----------------------------------------------------------------------------
-
-subroutine pe_to_pkz(geom,pe,pkz)
-
-type(fv3jedi_geom)  , intent(in ) :: geom !Geometry for the model
-real(kind=kind_real), intent(in ) ::  pe(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1) !Pressure edge/interface
-real(kind=kind_real), intent(out) :: pkz(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Pressure to the kappa
-
-integer :: k
-real(kind=kind_real) :: peln(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1)
-real(kind=kind_real) ::   pk(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1)
-
-peln = log(pe)
-pk = exp(kappa*peln)
-
-do k=1,geom%npz
-  pkz(:,:,k) = (pk(:,:,k+1)-pk(:,:,k)) / (kappa*(peln(:,:,k+1)-peln(:,:,k)))
-enddo
-
-end subroutine pe_to_pkz
-
-!----------------------------------------------------------------------------
-
-subroutine pe_to_delp(geom,pe,delp)
-
- type(fv3jedi_geom)  , intent(in ) :: geom !Geometry for the model
- real(kind=kind_real), intent(in ) ::   pe(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1) !Pressure edge/interface
- real(kind=kind_real), intent(out) :: delp(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Pressure thickness
-
- !Locals
- integer :: isc,iec,jsc,jec,k
-
- isc = geom%isc
- iec = geom%iec
- jsc = geom%jsc
- jec = geom%jec
-
- !Pressure at layer edge
- do k = 1,geom%npz
-   delp(isc:iec,jsc:jec,k) = pe(isc:iec,jsc:jec,k+1) - pe(isc:iec,jsc:jec,k)
- enddo
-
-end subroutine pe_to_delp
-
-!----------------------------------------------------------------------------
-
-subroutine delp_to_pe( geom, delp, pe )
-
-type(fv3jedi_geom)  , intent(in ) :: geom !Geometry for the model
-real(kind=kind_real), intent(in ) :: delp(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Pressure thickness
-real(kind=kind_real), intent(out) ::   pe(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1) !Pressure edge/interface
-
-!Locals
-integer :: isc,iec,jsc,jec,k
-
-isc = geom%isc
-iec = geom%iec
-jsc = geom%jsc
-jec = geom%jec
-
-!Pressure at layer edge
-pe(isc:iec,jsc:jec,1) = geom%ptop
-do k = 2,geom%npz+1
-  pe(isc:iec,jsc:jec,k) = pe(isc:iec,jsc:jec,k-1) + delp(isc:iec,jsc:jec,k-1)
-enddo
-
-end subroutine delp_to_pe
-
-!----------------------------------------------------------------------------
-
-subroutine pe_to_pk( geom, pe, pk )
-
-type(fv3jedi_geom)  , intent(in ) :: geom !Geometry for the model
-real(kind=kind_real), intent(in ) :: pe(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1) !Pressure edge/interface
-real(kind=kind_real), intent(out) :: pk(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Pressure to the kappa
-
-!Locals
-integer :: i, j, k
-real(kind=kind_real) :: pel1, pel2
-real(kind=kind_real) :: pek1, pek2
-
-do k=1,geom%npz
-  do j = geom%jsc,geom%jec
-    do i = geom%isc,geom%iec
-
-      pel1 = log(pe(i,j,k+1))
-      pel2 = log(pe(i,j,k))
-
-      pek1 = exp(kappa*pel1)
-      pek2 = exp(kappa*pel2)
-
-      pk(i,j,k) = (pek1-pek2)/(kappa*(pel1-pel2))
-
-    end do
-  end do
-end do
-
-end subroutine pe_to_pk
-
-!----------------------------------------------------------------------------
-
-subroutine ps_to_pe(geom,ps,pe)
-
- type(fv3jedi_geom)  , intent(in   ) :: geom !Geometry for the model
- real(kind=kind_real), intent(in   ) :: ps(geom%isc:geom%iec,geom%jsc:geom%jec,1           )   !Surface pressure
- real(kind=kind_real), intent(inout) :: pe(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1)   !Pressure thickness
-
- integer :: k
-
- do k = 1,geom%npz+1
-   pe(:,:,k) = geom%ak(k) + geom%bk(k) * ps(:,:,1)
- enddo
-
-endsubroutine ps_to_pe
-
-!----------------------------------------------------------------------------
-
-subroutine ps_to_pkz(geom,ps,pkz)
-
- type(fv3jedi_geom)  , intent(in   ) :: geom !Geometry for the model
- real(kind=kind_real), intent(in   ) ::  ps(geom%isc:geom%iec,geom%jsc:geom%jec,1         )   !Surface pressure
- real(kind=kind_real), intent(inout) :: pkz(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Pressure ^ kappa
-
- integer :: k
- real(kind=kind_real) :: pe(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1) !Pressure
-
- call ps_to_pe(geom, ps, pe)
- call pe_to_pkz(geom, pe, pkz)
-
-endsubroutine ps_to_pkz
 
 !----------------------------------------------------------------------------
 
@@ -270,6 +156,70 @@ subroutine ps_to_delp_ad(geom,ps_ad,delp_ad)
 endsubroutine ps_to_delp_ad
 
 ! --------------------------------------------------------------------------------------------------
+! Calculate pressure levels from surface pressure (TL)
+subroutine ps_to_p_tl(geom,ps_tl,p_tl)
+
+ type(fv3jedi_geom)  , intent(in   ) :: geom !Geometry for the model
+ real(kind=kind_real), intent(inout) :: ps_tl(geom%isc:geom%iec,geom%jsc:geom%jec           )   !Surface pressure
+ real(kind=kind_real), intent(inout) ::  p_tl(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Mid-lev pressures
+
+ integer :: k
+
+ do k=1,geom%npz
+    p_tl(:,:,k) = 0.5_kind_real*(geom%bk(k)+geom%bk(k+1))*ps_tl
+ enddo
+
+end subroutine ps_to_p_tl
+
+! --------------------------------------------------------------------------------------------------
+! Calculate pressure levels from surface pressure (AD)
+subroutine ps_to_p_ad(geom,ps_ad,p_ad)
+
+ type(fv3jedi_geom)  , intent(in   ) :: geom !Geometry for the model
+ real(kind=kind_real), intent(inout) :: ps_ad(geom%isc:geom%iec,geom%jsc:geom%jec           )   !Surface pressure
+ real(kind=kind_real), intent(inout) ::  p_ad(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)   !Mid-lev pressures
+
+ integer :: k
+
+ do k=1,geom%npz
+    ps_ad(:,:) = ps_ad(:,:) + 0.5_kind_real*(geom%bk(k)+geom%bk(k+1))*p_ad(:,:,k)
+ enddo
+
+end subroutine ps_to_p_ad
+
+! --------------------------------------------------------------------------------------------------
+! Calculate pressure edges from surface pressure (TL)
+subroutine ps_to_pe_tl(geom,ps_tl,pe_tl)
+
+ type(fv3jedi_geom)  , intent(in   ) :: geom !Geometry for the model
+ real(kind=kind_real), intent(inout) :: ps_tl(geom%isc:geom%iec,geom%jsc:geom%jec             ) !Surface pressure
+ real(kind=kind_real), intent(inout) :: pe_tl(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1) !Edge pressures
+
+ integer :: k
+
+ do k=1,geom%npz+1
+    pe_tl(:,:,k) = geom%bk(k)*ps_tl
+ enddo
+
+end subroutine ps_to_pe_tl
+
+! --------------------------------------------------------------------------------------------------
+! Calculate pressure edges from surface pressure (AD)
+subroutine ps_to_pe_ad(geom,ps_ad,pe_ad)
+
+ type(fv3jedi_geom)  , intent(in   ) :: geom !Geometry for the model
+ real(kind=kind_real), intent(inout) :: ps_ad(geom%isc:geom%iec,geom%jsc:geom%jec             ) !Surface pressure
+ real(kind=kind_real), intent(inout) :: pe_ad(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz+1) !Mid-lev pressures
+
+ integer :: k
+
+ do k=1,geom%npz+1
+    ps_ad(:,:) = ps_ad(:,:) + geom%bk(k)*pe_ad(:,:,k)
+ enddo
+
+end subroutine ps_to_pe_ad
+
+! --------------------------------------------------------------------------------------------------
 ! Locate tropopause using potential vorticity and ozone
 
 subroutine tropprs(geom, ps, prs, tv, o3, vort, tprs)
@@ -284,20 +234,21 @@ subroutine tropprs(geom, ps, prs, tv, o3, vort, tprs)
 
  ! Local
  integer :: isc,iec,jsc,jec
- integer :: i,j,k,kk
+ integer :: i,j,k
  integer :: npz
  integer :: itrop_k
  integer :: ifound_pv, ifound_oz
  integer :: itrp_pv, itrp_oz
 
  real(kind=kind_real), parameter :: r1e5 = 1.0e5
- real(kind=kind_real), parameter :: r2e6 = 2.0e-6
- real(kind=kind_real), parameter :: r3e7 = 3.0e-7
+ real(kind=kind_real), parameter :: r2em6 = 2.0e-6
+ real(kind=kind_real), parameter :: r3em7 = 3.0e-7
  real(kind=kind_real) :: pm1, pp1, thetam1, thetap1, pv
  real(kind=kind_real) :: psi
  real(kind=kind_real) :: prsl(geom%npz), pvort(geom%npz)
  real(kind=kind_real) :: o3mr(geom%npz)
  real(kind=kind_real) :: lat, wgt
+ real(kind=kind_real) :: rad2deg, constoz, kappa, grav
 
  ! Domain
  isc = geom%isc
@@ -306,6 +257,11 @@ subroutine tropprs(geom, ps, prs, tv, o3, vort, tprs)
  jec = geom%jec
  npz = geom%npz
 
+ ! Constants
+ rad2deg = constant('rad2deg')
+ constoz = constant('constoz')
+ kappa = constant('kappa')
+ grav = constant('grav')
  ! Loop through locations
  do j = jsc, jec
    do i = isc, iec
@@ -325,43 +281,42 @@ subroutine tropprs(geom, ps, prs, tv, o3, vort, tprs)
 
      ! Compute potential vortivity (pv) at midpoint pressure
      ! Work from model surface to top
-     do k = 2, npz-1   ! index from top to surface:     2,     3, ..., npz-1
-       kk = npz-k+1    ! index from surface to top: npz-1, npz-2, ..., 2
-       pm1 = prsl(kk-1)
-       pp1 = prsl(kk+1)
-       thetam1 = tv(i,j,kk-1) * (r1e5 / pm1)**kappa
-       thetap1 = tv(i,j,kk-1) * (r1e5 / pp1)**kappa
-       pv = grav * vort(i,j,kk) * (thetam1 - thetap1) / (pm1 - pp1)
-       pvort(kk) = abs(pv)
+     do k =  2, npz-1
+       pm1 = prsl(k+1)
+       pp1 = prsl(k-1)
+       thetam1 = tv(i,j,k+1) * (r1e5 / pm1)**kappa
+       thetap1 = tv(i,j,k-1) * (r1e5 / pp1)**kappa
+       pv = grav * vort(i,j,k) * (thetam1 - thetap1) / (pm1 - pp1)
+       pvort(k) = abs(pv)
      enddo
      pvort(1) = pvort(2)
      pvort(npz) = pvort(npz-1)
 
      ! Locate tropopause using vorticity and ozone
      ! Search upward (decressing pressure) for tropopause above sigma 0.7
-     ifound_pv = 0; itrp_pv = npz
-     ifound_oz = 0; itrp_oz = npz
-     do k = 2, npz-1   ! index from top to surface:     2,     3, ..., npz-1
-       kk = npz-k+1    ! index from surface to top: npz-1, npz-2, ..., 2
-       if (prsl(kk) * psi < 0.7) then  ! sigma level < 0.7
+     ifound_pv = 0; itrp_pv = 1 
+     ifound_oz = 0; itrp_oz = 1 
+     do k = npz-1, 1, -1 
+       if (prsl(k) * psi < 0.7) then  ! sigma level < 0.7
          ! Tropopause at level where pv > 2e-6
-         if (pvort(kk) > r2e6 .and. ifound_pv == 0) then
+         if (pvort(k) > r2em6 .and. ifound_pv == 0) then
            ifound_pv = 1
-           itrp_pv = kk
+           itrp_pv = k
          endif
          !Tropopause at level where o3mr > 3e-7
-         if (o3mr(kk) > r3e7 .and. ifound_oz == 0) then
+         if (o3mr(k) > r3em7 .and. ifound_oz == 0) then
            ifound_oz = 1
-           itrp_oz = kk
+           itrp_oz = k
          endif
        endif
      enddo
 
      ! Merge pv and o3 tropopause levels between 20 and 40 degree latitudes
+     wgt = 0.0
      lat =abs(lat)
      if (lat >= 40.0) then
        itrop_k = itrp_pv
-     elseif (lat >=20) then
+     elseif (lat >=20.0) then
        wgt = (lat - 20.0) / 20.0
        itrop_k = wgt * itrp_pv + (1.0 - wgt) * itrp_oz
      else ! lat

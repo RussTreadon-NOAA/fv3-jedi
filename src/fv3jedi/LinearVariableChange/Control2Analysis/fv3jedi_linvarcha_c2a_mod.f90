@@ -9,6 +9,7 @@ module fv3jedi_linvarcha_c2a_mod
 use fckit_configuration_module, only: fckit_configuration
 
 ! fv3jedi
+use fv3jedi_constants_mod, only: constant
 use fv3jedi_fieldfail_mod, only: field_fail
 use fv3jedi_field_mod,     only: copy_subset, field_clen
 use fv3jedi_geom_mod,      only: fv3jedi_geom
@@ -55,43 +56,61 @@ type(fv3jedi_state), target, intent(in)    :: bg
 type(fv3jedi_state), target, intent(in)    :: fg
 type(fckit_configuration),   intent(in)    :: conf
 
-real(kind=kind_real), pointer :: t   (:,:,:)
-real(kind=kind_real), pointer :: q   (:,:,:)
+real(kind=kind_real), pointer :: t   (:,:,:)=>NULL()
+real(kind=kind_real), pointer :: tv  (:,:,:)=>NULL()
+real(kind=kind_real), pointer :: q   (:,:,:)=>NULL()
 real(kind=kind_real), allocatable :: delp(:,:,:)
-real(kind=kind_real), pointer :: ps  (:,:,:)
+real(kind=kind_real), pointer :: ps  (:,:,:)=>NULL()
 
 !> Pointers to the background state
-call bg%get_field('t'   , t)
-call bg%get_field('sphum'   , q)
+if ( bg%has_field('air_temperature') ) then
+  call bg%get_field('air_temperature', t)
+endif
+if ( bg%has_field('water_vapor_mixing_ratio_wrt_moist_air') ) then
+  call bg%get_field('water_vapor_mixing_ratio_wrt_moist_air', q)
+endif
 
 !> Pressure
-if (bg%has_field('delp')) then
-  call bg%get_field('delp', delp)
-elseif (bg%has_field('ps')) then
-  call bg%get_field('ps', ps)
+if (bg%has_field('air_pressure_thickness')) then
+  call bg%get_field('air_pressure_thickness', delp)
+elseif (bg%has_field('air_pressure_at_surface')) then
+  call bg%get_field('air_pressure_at_surface', ps)
   allocate(delp(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
   call ps_to_delp(geom, ps, delp)
 else
-  call abor1_ftn("fv3jedi_linvarcha_c2a_mod.create : delp or ps should be present")
+  call abor1_ftn('fv3jedi_linvarcha_c2a_mod.create : delp or ps should be present')
 endif
 
 !> Virtual temperature trajectory
-allocate(self%tvtraj   (geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
-call T_to_Tv(geom,t,q,self%tvtraj)
+allocate(self%tvtraj(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
+if ( bg%has_field('virtual_temperature')) then
+  call bg%get_field('virtual_temperature', tv)
+  self%tvtraj = tv
+else
+  if (associated(t).and.associated(q)) then
+    call T_to_Tv(geom,t,q,self%tvtraj)
+  endif
+endif
 
 !> Temperature trajectory
-allocate(self%ttraj   (geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
-self%ttraj = t
+if(associated(t)) then
+  allocate(self%ttraj   (geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
+  self%ttraj = t
+endif
 
 !> Specific humidity trajecotory
-allocate(self%qtraj   (geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
-self%qtraj = q
+if(associated(t)) then
+  allocate(self%qtraj   (geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
+  self%qtraj = q
+endif
 
-!> Compute saturation specific humidity for q to RH transform
-allocate(self%qsattraj(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
+if(associated(t).and.associated(q).and.allocated(delp)) then
+  !> Compute saturation specific humidity for q to RH transform
+  allocate(self%qsattraj(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
 
-!> Compute saturation specific humidity
-call get_qsat(geom,delp,t,q,self%qsattraj)
+  !> Compute saturation specific humidity
+  call get_qsat(geom,delp,t,q,self%qsattraj)
+endif
 
 end subroutine create
 
@@ -124,7 +143,7 @@ character(len=field_clen), allocatable :: fields_to_do(:)
 real(kind=kind_real), pointer :: field_ptr(:,:,:)
 
 ! Winds
-logical :: have_uava, have_udvd
+logical :: have_uava
 real(kind=kind_real), allocatable, dimension(:,:,:) :: psi
 real(kind=kind_real), allocatable, dimension(:,:,:) :: chi
 real(kind=kind_real), allocatable, dimension(:,:,:) :: ud
@@ -134,13 +153,23 @@ real(kind=kind_real), allocatable, dimension(:,:,:) :: va
 
 ! Specific humidity
 logical :: have_q
-real(kind=kind_real), pointer,     dimension(:,:,:) :: rh
-real(kind=kind_real), allocatable, dimension(:,:,:) :: q
+real(kind=kind_real), pointer,     dimension(:,:,:) :: q
 
 ! Temperature
 logical :: have_t
 real(kind=kind_real), pointer,     dimension(:,:,:) :: tv
 real(kind=kind_real), allocatable, dimension(:,:,:) :: t
+
+! Pressure thickness
+logical :: have_delp
+real(kind=kind_real), pointer,     dimension(:,:,:) :: ps
+real(kind=kind_real), allocatable, dimension(:,:,:) :: delp
+
+! Ozone
+logical :: have_o3ppmv
+logical :: have_o3mr
+real(kind=kind_real), pointer,     dimension(:,:,:) :: o3ctl
+real(kind=kind_real), allocatable, dimension(:,:,:) :: o3ana
 
 ! Identity part of the change of fields
 ! -------------------------------------
@@ -152,49 +181,64 @@ if (.not.allocated(fields_to_do)) return
 
 ! Winds
 ! -----
-have_udvd = .false.
-if (dxc%has_field('psi') .and. dxc%has_field('chi')) then
-  call dxc%get_field('psi', psi)
-  call dxc%get_field('chi', chi)
+have_uava = .false.
+if (dxc%has_field('air_horizontal_streamfunction') .and. &
+    dxc%has_field('air_horizontal_velocity_potential')) then
+  call dxc%get_field('air_horizontal_streamfunction', psi)
+  call dxc%get_field('air_horizontal_velocity_potential', chi)
   allocate(ud(geom%isc:geom%iec  ,geom%jsc:geom%jec+1,geom%npz))
   allocate(vd(geom%isc:geom%iec+1,geom%jsc:geom%jec  ,geom%npz))
   call psichi_to_udvd(geom, psi, chi, ud, vd)
-  have_udvd = .true.
-endif
-
-! A-Grid winds
-! ------------
-have_uava = .false.
-if (have_udvd) then
   allocate(ua(geom%isc:geom%iec,geom%jsc:geom%jec,geom%npz))
   allocate(va(geom%isc:geom%iec,geom%jsc:geom%jec,geom%npz))
   call d_to_a(geom, ud, vd, ua, va)
   have_uava=.true.
 endif
 
-! Specific humidity
-!------------------
-have_q = .false.
-if (dxc%has_field('rh')) then
-  call dxc%get_field('rh', rh)
-  allocate(q(geom%isc:geom%iec,geom%jsc:geom%jec,geom%npz))
-  call rh_to_q_tl(geom, self%qsattraj, rh, q)
-  have_q = .true.
-endif
-
 ! Temperature
 ! -----------
 have_t = .false.
-if (dxc%has_field('t')) then
-  call dxc%get_field('t', t)
-  have_t = .true.
-elseif (dxc%has_field('tv') .and. have_q) then
-  call dxc%get_field('tv', tv)
+have_q = dxc%has_field('water_vapor_mixing_ratio_wrt_moist_air')
+if (dxc%has_field('air_temperature')) then
   allocate(t(geom%isc:geom%iec,geom%jsc:geom%jec,geom%npz))
+  call dxc%get_field('air_temperature', t)
+  have_t = .true.
+elseif (dxc%has_field('virtual_temperature') .and. have_q) then
+  allocate(t(geom%isc:geom%iec,geom%jsc:geom%jec,geom%npz))
+  call dxc%get_field('water_vapor_mixing_ratio_wrt_moist_air', q)
+  call dxc%get_field('virtual_temperature'  , tv)
   call Tv_to_T_tl(geom, self%tvtraj, tv, self%qtraj, q, t)
   have_t = .true.
 endif
 
+! Pressure thickness
+! ------------------
+have_delp = .false.
+if (dxc%has_field('air_pressure_at_surface')) then
+  call dxc%get_field('air_pressure_at_surface', ps)
+  allocate(delp(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
+  call ps_to_delp_tl(geom, ps, delp)
+  have_delp = .true.
+endif
+
+! Ozone
+! -----
+have_o3mr = .false.
+have_o3ppmv = .false.
+if (dxc%has_field('mole_fraction_of_ozone_in_air') .and. &
+    dxa%has_field('ozone_mass_mixing_ratio')) then
+   call dxc%get_field('mole_fraction_of_ozone_in_air', o3ctl)
+   allocate(o3ana(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
+   o3ana = o3ctl / constant('constoz')
+   have_o3mr=.true.
+endif
+if (dxc%has_field('ozone_mass_mixing_ratio') .and. &
+    dxa%has_field('mole_fraction_of_ozone_in_air')) then
+   call dxc%get_field('ozone_mass_mixing_ratio', o3ctl)
+   allocate(o3ana(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
+   o3ana = o3ctl * constant('constoz')
+   have_o3ppmv=.true.
+endif
 
 ! Loop over the fields not found in the input state and work through cases
 ! ------------------------------------------------------------------------
@@ -204,44 +248,54 @@ do f = 1, size(fields_to_do)
 
   select case (trim(fields_to_do(f)))
 
-  case ("ud")
+  case ('air_pressure_thickness')
 
-    if (.not. have_uava) call field_fail(fields_to_do(f))
-    field_ptr = ud
+    if (.not. have_delp) call field_fail('tl_'//fields_to_do(f))
+    field_ptr = delp
 
-  case ("vd")
+  case ('eastward_wind')
 
-    if (.not. have_uava) call field_fail(fields_to_do(f))
-    field_ptr = vd
-
-  case ("ua")
-
-    if (.not. have_uava) call field_fail(fields_to_do(f))
+    if (.not. have_uava) call field_fail('tl_'//fields_to_do(f))
     field_ptr = ua
 
-  case ("va")
+  case ('northward_wind')
 
-    if (.not. have_uava) call field_fail(fields_to_do(f))
+    if (.not. have_uava) call field_fail('tl_'//fields_to_do(f))
     field_ptr = va
 
-  case ("t")
+  case ('air_temperature')
 
-    if (.not. have_t) call field_fail(fields_to_do(f))
+    if (.not. have_t) call field_fail('tl_'//fields_to_do(f))
     field_ptr = t
 
-  case ("sphum")
+  case ('ozone_mass_mixing_ratio')
 
-    if (.not. have_q) call field_fail(fields_to_do(f))
-    field_ptr = q
+    if (.not. have_o3mr) call field_fail('tl_'//fields_to_do(f))
+    field_ptr = o3ana
+
+  case ('mole_fraction_of_ozone_in_air')
+
+    if (.not. have_o3ppmv) call field_fail('tl_'//fields_to_do(f))
+    field_ptr = o3ana
 
   case default
 
-    call abor1_ftn("fv3jedi_linvarcha_c2a_mod.multiply unknown field: "//trim(fields_to_do(f)) &
-                   //". Not in input field and no transform case specified.")
+    call abor1_ftn('fv3jedi_linvarcha_c2a_mod.multiply unknown field: '//trim(fields_to_do(f)) &
+                   //'. Not in input field and no transform case specified.')
 
   end select
 
 enddo
+
+if(allocated(psi)) deallocate(psi)
+if(allocated(chi)) deallocate(chi)
+if(allocated(ud )) deallocate(ud )
+if(allocated(vd )) deallocate(vd )
+if(allocated(ua )) deallocate(ua )
+if(allocated(va )) deallocate(va )
+if(allocated(t  )) deallocate(t  )
+if(allocated(delp)) deallocate(delp)
+if(allocated(o3ana)) deallocate(o3ana)
 
 end subroutine multiply
 
@@ -260,7 +314,7 @@ character(len=field_clen), allocatable :: fields_to_do(:)
 real(kind=kind_real), pointer :: field_ptr(:,:,:)
 
 ! Winds
-logical :: have_psichi, have_udvd
+logical :: have_psichi, have_uava
 real(kind=kind_real), pointer,     dimension(:,:,:) :: ua
 real(kind=kind_real), pointer,     dimension(:,:,:) :: va
 real(kind=kind_real), allocatable, dimension(:,:,:) :: ud
@@ -268,15 +322,24 @@ real(kind=kind_real), allocatable, dimension(:,:,:) :: vd
 real(kind=kind_real), allocatable, dimension(:,:,:) :: psi
 real(kind=kind_real), allocatable, dimension(:,:,:) :: chi
 
-! Relative humidity
-logical :: have_rh
+! Specfic humidity
 real(kind=kind_real), pointer,     dimension(:,:,:) :: q
-real(kind=kind_real), allocatable, dimension(:,:,:) :: rh
 
 ! Virtual temperature
-logical :: have_tv
+logical :: have_tv, have_q
 real(kind=kind_real), pointer,     dimension(:,:,:) :: t
 real(kind=kind_real), allocatable, dimension(:,:,:) :: tv
+
+! Surface pressure
+logical :: have_ps
+real(kind=kind_real), pointer,     dimension(:,:,:) :: delp
+real(kind=kind_real), allocatable, dimension(:,:,:) :: ps
+
+! Ozone
+logical :: have_o3mr,have_o3ppmv
+real(kind=kind_real), pointer,     dimension(:,:,:) :: o3ana
+real(kind=kind_real), allocatable, dimension(:,:,:) :: o3ctl
+
 
 ! Zero output
 ! -----------
@@ -293,56 +356,69 @@ if (.not.allocated(fields_to_do)) return
 ! Virtual temperature
 ! -------------------
 have_tv = .false.
-if (dxa%has_field('t') .and. dxa%has_field('sphum')) then
-  call dxa%get_field('t', t)
-  call dxa%get_field('sphum', q)
+have_q = .false.
+if (dxa%has_field('air_temperature') .and. dxa%has_field('water_vapor_mixing_ratio_wrt_moist_air')) then
+  call dxa%get_field('air_temperature', t)
+  call dxa%get_field('water_vapor_mixing_ratio_wrt_moist_air', q)
   allocate(tv(geom%isc:geom%iec,geom%jsc:geom%jec,geom%npz))
   tv = 0.0_kind_real
   call Tv_to_T_ad(geom, self%tvtraj, tv, self%qtraj, q, t)
   have_tv = .true.
-endif
-
-! Relative humidity
-!------------------
-have_rh = .false.
-if (dxa%has_field('sphum')) then
-  call dxa%get_field('sphum', q)
-  allocate(rh(geom%isc:geom%iec,geom%jsc:geom%jec,geom%npz))
-  rh = 0.0_kind_real
-  call rh_to_q_ad(geom, self%qsattraj, rh, q)
-  have_rh = .true.
+  if (dxc%has_field('virtual_temperature') .and. dxc%has_field('water_vapor_mixing_ratio_wrt_moist_air')) then
+    fields_to_do = [fields_to_do, 'water_vapor_mixing_ratio_wrt_moist_air']
+    have_q = .true.
+  endif
 endif
 
 ! A-Grid winds
 ! ------------
-have_udvd = .false.
-if (dxa%has_field('ud') .and. dxa%has_field('vd')) then
-  call dxa%get_field('ud', ud)
-  call dxa%get_field('vd', vd)
-  have_udvd = .true.
-elseif (dxa%has_field('ua') .and. dxa%has_field('va')) then
-  call dxa%get_field('ua', ua)
-  call dxa%get_field('va', va)
+have_psichi = .false.
+have_uava = .false.
+if (dxa%has_field('eastward_wind') .and. dxa%has_field('northward_wind')) then
+  call dxa%get_field('eastward_wind', ua)
+  call dxa%get_field('northward_wind', va)
   allocate(ud(geom%isc:geom%iec  ,geom%jsc:geom%jec+1,1:geom%npz))
   allocate(vd(geom%isc:geom%iec+1,geom%jsc:geom%jec  ,1:geom%npz))
   ud = 0.0_kind_real
   vd = 0.0_kind_real
   call d_to_a_ad(geom, ud, vd, ua, va)
-  have_udvd = .true.
-endif
-
-! Winds
-! -----
-have_psichi = .false.
-if (have_udvd) then
   allocate(psi(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
   allocate(chi(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz))
   psi = 0.0_kind_real
   chi = 0.0_kind_real
   call psichi_to_udvd_adm(geom, psi, chi, ud, vd)
+  have_uava = .true.
   have_psichi = .true.
 endif
 
+! Surface pressure
+! ----------------
+have_ps = .false.
+if (dxa%has_field('air_pressure_thickness')) then
+  call dxa%get_field('air_pressure_thickness', delp)
+  allocate(ps(geom%isc:geom%iec,geom%jsc:geom%jec,1))
+  call ps_to_delp_ad(geom, ps, delp)
+  have_ps = .true.
+endif
+
+! Ozone
+! -----
+have_o3mr = .false.
+have_o3ppmv = .false.
+if (dxc%has_field('mole_fraction_of_ozone_in_air') .and. &
+    dxa%has_field('ozone_mass_mixing_ratio')) then
+   call dxa%get_field('ozone_mass_mixing_ratio', o3ana)
+   allocate(o3ctl(geom%isc:geom%iec+1,geom%jsc:geom%jec  ,1:geom%npz))
+   o3ctl = o3ana * constant('constoz')
+   have_o3ppmv = .true.
+endif
+if (dxc%has_field('ozone_mass_mixing_ratio') .and. &
+    dxa%has_field('mole_fraction_of_ozone_in_air')) then
+   call dxa%get_field('mole_fraction_of_ozone_in_air', o3ana)
+   allocate(o3ctl(geom%isc:geom%iec+1,geom%jsc:geom%jec  ,1:geom%npz))
+   o3ctl = o3ana / constant('constoz')
+   have_o3mr = .true.
+endif
 
 ! Loop over the fields not found in the input state and work through cases
 ! ------------------------------------------------------------------------
@@ -352,34 +428,68 @@ do f = 1, size(fields_to_do)
 
   select case (trim(fields_to_do(f)))
 
-  case ("psi")
+  case ('air_pressure_at_surface')
 
-    if (.not. have_psichi) call field_fail(fields_to_do(f))
+    if (.not. have_ps) call field_fail('ad_'//fields_to_do(f))
+    field_ptr = ps
+
+  case ('eastward_wind')
+
+    if (.not. have_uava) call field_fail('ad_'//fields_to_do(f))
+    field_ptr = ua
+
+  case ('northward_wind')
+
+    if (.not. have_uava) call field_fail('ad_'//fields_to_do(f))
+    field_ptr = va
+
+  case ('air_horizontal_streamfunction')
+
+    if (.not. have_psichi) call field_fail('ad_'//fields_to_do(f))
     field_ptr = psi
 
-  case ("chi")
+  case ('air_horizontal_velocity_potential')
 
-    if (.not. have_psichi) call field_fail(fields_to_do(f))
+    if (.not. have_psichi) call field_fail('ad_'//fields_to_do(f))
     field_ptr = chi
 
-  case ("tv")
+  case ('virtual_temperature')
 
-    if (.not. have_tv) call field_fail(fields_to_do(f))
+    if (.not. have_tv) call field_fail('ad_'//fields_to_do(f))
     field_ptr = tv
 
-  case ("rh")
+  case ('water_vapor_mixing_ratio_wrt_moist_air')
 
-    if (.not. have_rh) call field_fail(fields_to_do(f))
-    field_ptr = rh
+    if (.not. have_q) call field_fail('ad_'//fields_to_do(f))
+    field_ptr = q
+
+  case ('ozone_mass_mixing_ratio')
+
+    if (.not. have_o3mr) call field_fail('ad_'//fields_to_do(f))
+    field_ptr = o3ctl
+
+  case ('mole_fraction_of_ozone_in_air')
+
+    if (.not. have_o3ppmv) call field_fail('ad_'//fields_to_do(f))
+    field_ptr = o3ctl
 
   case default
 
-    call abor1_ftn("fv3jedi_linvarcha_c2a_mod.multiplyadjoint unknown field: "//trim(fields_to_do(f)) &
-                   //". Not in input field and no transform case specified.")
+    call abor1_ftn('fv3jedi_linvarcha_c2a_mod.multiplyadjoint unknown field: ' // &
+                   trim(fields_to_do(f)) //'. Not in input field and no transform case specified.')
 
   end select
 
 enddo
+
+if(allocated(psi)) deallocate(psi)
+if(allocated(chi)) deallocate(chi)
+if(allocated(ud )) deallocate(ud )
+if(allocated(vd )) deallocate(vd )
+if(allocated(tv )) deallocate(tv )
+if(allocated(o3ctl)) deallocate(o3ctl)
+if(allocated(ps)) deallocate(ps)
+
 
 end subroutine multiplyadjoint
 

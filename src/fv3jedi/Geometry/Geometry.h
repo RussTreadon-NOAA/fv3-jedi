@@ -15,6 +15,8 @@
 #include "atlas/field.h"
 #include "atlas/functionspace.h"
 
+#include "eckit/config/Configuration.h"
+#include "eckit/config/LocalConfiguration.h"
 #include "eckit/mpi/Comm.h"
 
 #include "oops/mpi/mpi.h"
@@ -23,7 +25,6 @@
 
 #include "fv3jedi/FieldMetadata/FieldsMetadata.h"
 #include "fv3jedi/Geometry/Geometry.interface.h"
-#include "fv3jedi/Geometry/GeometryParameters.h"
 #include "fv3jedi/GeometryIterator/GeometryIterator.h"
 
 namespace oops {
@@ -39,14 +40,16 @@ namespace fv3jedi {
 class Geometry : public util::Printable,
                  private util::ObjectCounter<Geometry> {
  public:
-  typedef GeometryParameters Parameters_;
   static const std::string classname() {return "fv3jedi::Geometry";}
 
-  explicit Geometry(const Parameters_ &, const eckit::mpi::Comm &);
+  explicit Geometry(const eckit::Configuration &, const eckit::mpi::Comm &);
   Geometry(const Geometry &);
   ~Geometry();
 
   Geometry & operator=(const Geometry &) = delete;
+
+  // For use by other fv3jedi code
+  bool isEqual(const Geometry &) const;
 
   bool levelsAreTopDown() const {return true;}
 
@@ -57,23 +60,28 @@ class Geometry : public util::Printable,
   F90geom & toFortran() {return keyGeom_;}
   const F90geom & toFortran() const {return keyGeom_;}
   const eckit::mpi::Comm & getComm() const {return comm_;}
-  const atlas::FunctionSpace & functionSpace() const {return functionSpaceIncludingHalo_;}
-  atlas::FunctionSpace & functionSpace() {return functionSpaceIncludingHalo_;}
-  const atlas::FieldSet & extraFields() const {return extraFields_;}
-  atlas::FieldSet & extraFields() {return extraFields_;}
-  const atlas::FieldSet & fields() const {return extraFields_;}
-  void latlon(std::vector<double> &, std::vector<double> &, const bool) const;
+  const atlas::FunctionSpace & functionSpace() const {return functionSpace_;}
+  const atlas::FieldSet & fields() const {return fields_;}
+
+  int tileNum() const {return tileNum_;}
+  std::vector<int> get_indices() const {
+     int ist, iend, jst, jend, kst, kend, npz;
+     std::vector<int> indices;
+     fv3jedi_geom_start_end_f90(keyGeom_, ist, iend, jst, jend, kst, kend, npz);
+     return std::vector<int>{{ist, iend, jst, jend, kst, kend, npz}};
+  }
 
   std::vector<size_t> variableSizes(const oops::Variables &) const;
 
   const FieldsMetadata & fieldsMetaData() const {return *fieldsMeta_;}
 
-  // Grid dimension accessors (backed by cached Fortran values)
-  int npx() const {return npx_;}
-  int npy() const {return npy_;}
-  int npz() const {return npz_;}
+  // Functions to retrieve geometry features
   const std::vector<double> & ak() const {return ak_;}
   const std::vector<double> & bk() const {return bk_;}
+  const double & pTop() const {return pTop_;}
+  const int & npx() const {return npx_;}
+  const int & npy() const {return npy_;}
+  const int & npz() const {return npz_;}
 
  private:
   void print(std::ostream &) const;
@@ -81,14 +89,16 @@ class Geometry : public util::Printable,
   F90geom keyGeom_;
   const eckit::mpi::Comm & comm_;
   atlas::FunctionSpace functionSpace_;
-  atlas::FunctionSpace functionSpaceIncludingHalo_;
-  atlas::FieldSet extraFields_;
+  atlas::FieldSet fields_;
+  eckit::LocalConfiguration fieldMasks_;
   std::shared_ptr<FieldsMetadata> fieldsMeta_;
+  std::vector<double> ak_;
+  std::vector<double> bk_;
+  int tileNum_;
   int npx_;
   int npy_;
   int npz_;
-  std::vector<double> ak_;
-  std::vector<double> bk_;
+  double pTop_;
 };
 // -------------------------------------------------------------------------------------------------
 

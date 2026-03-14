@@ -51,9 +51,9 @@ type(c_ptr), value, intent(in)    :: c_vars     !< List of variables
 type(c_ptr), value, intent(in)    :: c_time     !< Datetime
 
 type(fv3jedi_increment), pointer :: self
-type(fv3jedi_geom),  pointer :: geom
-type(oops_variables) :: vars
-type(fckit_configuration)    :: f_conf
+type(fv3jedi_geom),      pointer :: geom
+type(oops_variables)             :: vars
+type(fckit_configuration)        :: f_conf
 
 call fv3jedi_geom_registry%get(c_key_geom, geom)
 call fv3jedi_increment_registry%init()
@@ -198,32 +198,9 @@ afieldset = atlas_fieldset(c_afieldset)
 
 call self%to_fieldset(geom, vars, afieldset)
 
+call afieldset%final()
+
 end subroutine fv3jedi_increment_to_fieldset_c
-
-! --------------------------------------------------------------------------------------------------
-
-subroutine fv3jedi_increment_to_fieldset_ad_c(c_key_self, c_key_geom, c_vars, c_afieldset) &
- & bind (c,name='fv3jedi_increment_to_fieldset_ad_f90')
-
-implicit none
-integer(c_int), intent(in) :: c_key_self
-integer(c_int), intent(in) :: c_key_geom
-type(c_ptr), value, intent(in) :: c_vars
-type(c_ptr), intent(in), value :: c_afieldset
-
-type(fv3jedi_increment), pointer :: self
-type(fv3jedi_geom),  pointer :: geom
-type(oops_variables) :: vars
-type(atlas_fieldset) :: afieldset
-
-call fv3jedi_increment_registry%get(c_key_self, self)
-call fv3jedi_geom_registry%get(c_key_geom, geom)
-vars = oops_variables(c_vars)
-afieldset = atlas_fieldset(c_afieldset)
-
-call self%to_fieldset_ad(geom, vars, afieldset)
-
-end subroutine fv3jedi_increment_to_fieldset_ad_c
 
 ! --------------------------------------------------------------------------------------------------
 
@@ -247,6 +224,8 @@ vars = oops_variables(c_vars)
 afieldset = atlas_fieldset(c_afieldset)
 
 call self%from_fieldset(geom, vars, afieldset)
+
+call afieldset%final()
 
 end subroutine fv3jedi_increment_from_fieldset_c
 
@@ -431,29 +410,6 @@ end subroutine fv3jedi_increment_diff_states_c
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine fv3jedi_increment_change_resol_c(c_key_inc,c_key_geom,c_key_rhs,c_key_geom_rhs) &
-           bind(c,name='fv3jedi_increment_change_resol_f90')
-
-implicit none
-integer(c_int), intent(in) :: c_key_inc
-integer(c_int), intent(in) :: c_key_geom
-integer(c_int), intent(in) :: c_key_rhs
-integer(c_int), intent(in) :: c_key_geom_rhs
-
-type(fv3jedi_increment), pointer :: self, other
-type(fv3jedi_geom),  pointer :: geom, geom_other
-
-call fv3jedi_increment_registry%get(c_key_inc,self)
-call fv3jedi_geom_registry%get(c_key_geom, geom)
-call fv3jedi_increment_registry%get(c_key_rhs,other)
-call fv3jedi_geom_registry%get(c_key_geom_rhs, geom_other)
-
-call self%change_resol(geom, other, geom_other)
-
-end subroutine fv3jedi_increment_change_resol_c
-
-! --------------------------------------------------------------------------------------------------
-
 subroutine fv3jedi_increment_norm_c(c_key_inc, prms) bind(c,name='fv3jedi_increment_norm_f90')
 
 implicit none
@@ -610,20 +566,28 @@ implicit none
 integer(c_int),               intent(in)    :: c_key_self
 integer(c_int),               intent(in)    :: c_f_num
 integer(c_int),               intent(in)    :: c_f_name_len
-character(len=1,kind=c_char), intent(inout) :: c_f_name(c_f_name_len)
+character(len=1,kind=c_char), intent(inout) :: c_f_name(c_f_name_len + 1)
 real(c_double),               intent(inout) :: c_minmaxrms(3)
 
 type(fv3jedi_increment), pointer :: self
 character(len=field_clen) :: field_name
-integer :: n
+integer :: n, trunc_name_len
 
 call fv3jedi_increment_registry%get(c_key_self,self)
 
 call self%minmaxrms(c_f_num, field_name, c_minmaxrms)
 
-do n = 1,c_f_name_len
+! logic from oops f_c_string, but without allocation of c string array
+trunc_name_len = min(len_trim(field_name), c_f_name_len)
+do n = 1,trunc_name_len
   c_f_name(n) = field_name(n:n)
 enddo
+
+! if field_name is shorter than C char array, pad with spaces before adding null terminator
+do n = trunc_name_len+1,c_f_name_len
+  c_f_name(n) = ' '
+enddo
+c_f_name(c_f_name_len+1) = c_null_char
 
 end subroutine fv3jedi_increment_getminmaxrms_c
 

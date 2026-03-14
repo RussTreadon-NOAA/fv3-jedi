@@ -14,8 +14,9 @@
 
 #include "atlas/field.h"
 
+#include "eckit/config/Configuration.h"
+
 #include "oops/base/LocalIncrement.h"
-#include "oops/base/WriteParametersBase.h"
 #include "oops/util/DateTime.h"
 #include "oops/util/dot_product.h"
 #include "oops/util/Duration.h"
@@ -70,9 +71,17 @@ class IncrementReadParameters : public oops::Parameters {
 
 // -------------------------------------------------------------------------------------------------
 
-class IncrementWriteParameters : public oops::WriteParametersBase {
-  OOPS_CONCRETE_PARAMETERS(IncrementWriteParameters, WriteParametersBase)
+class IncrementWriteParameters : public oops::Parameters {
+  OOPS_CONCRETE_PARAMETERS(IncrementWriteParameters, Parameters)
  public:
+  oops::OptionalParameter<std::string> type{"type", this};
+  oops::OptionalParameter<std::string> exp{"exp", this};
+  oops::OptionalParameter<int> member{"member", this};
+  oops::OptionalParameter<std::string> memberPattern{"member pattern", this};
+  oops::OptionalParameter<util::DateTime> date{"date", this};
+  oops::OptionalParameter<int> iteration{"iteration", this};
+  oops::OptionalParameter<std::string> prefix{"prefix", this};
+  oops::Parameter<bool> dateCols{"date colons", true, this};
   IOParametersWrapper ioParametersWrapper{this};
 };
 
@@ -83,13 +92,9 @@ class Increment : public util::Printable,
  public:
   static const std::string classname() {return "fv3jedi::Increment";}
 
-  typedef DiracParameters          DiracParameters_;
-  typedef IncrementReadParameters  ReadParameters_;
-  typedef IncrementWriteParameters WriteParameters_;
-
 /// Constructor, destructor
   Increment(const Geometry &, const oops::Variables &, const util::DateTime &);
-  Increment(const Geometry &, const Increment &);
+  Increment(const Geometry &, const Increment &, const bool ad = false);
   Increment(const Increment &, const bool);
   virtual ~Increment();
 
@@ -102,12 +107,12 @@ class Increment : public util::Printable,
   Increment & operator+=(const Increment &);
   Increment & operator-=(const Increment &);
   Increment & operator*=(const double &);
+  void sqrt();
   void axpy(const double &, const Increment &, const bool check = true);
   double dot_product_with(const Increment &) const;
   void schur_product_with(const Increment &);
   void random();
-  void dirac(const DiracParameters_ &);
-  std::vector<double> rmsByLevel(const std::string &) const;
+  void dirac(const eckit::Configuration &);
 
 /// Get/Set increment values at grid points
   oops::LocalIncrement getLocal(const GeometryIterator &) const;
@@ -115,12 +120,11 @@ class Increment : public util::Printable,
 
 /// Accessors to the ATLAS fieldset
   void toFieldSet(atlas::FieldSet &) const;
-  void toFieldSetAD(const atlas::FieldSet &);
   void fromFieldSet(const atlas::FieldSet &);
 
 /// I/O and diagnostics
-  void read(const ReadParameters_ &);
-  void write(const WriteParameters_ &) const;
+  void read(const eckit::Configuration &);
+  void write(const eckit::Configuration &) const;
   double norm() const;
 
 // Add or remove fields
@@ -139,7 +143,6 @@ class Increment : public util::Printable,
 // Utilities
   const Geometry & geometry() const {return geom_;}
   const oops::Variables & variables() const {return vars_;}
-  const oops::Variables & variablesLongName() const {return varsLongName_;}
 
   const util::DateTime & time() const {return time_;}
   util::DateTime & time() {return time_;}
@@ -151,11 +154,14 @@ class Increment : public util::Printable,
 
 // Private methods and variables
  private:
+  typedef DiracParameters          DiracParameters_;
+  typedef IncrementReadParameters  ReadParameters_;
+  typedef IncrementWriteParameters WriteParameters_;
+
   void print(std::ostream &) const;
   F90inc keyInc_;
   const Geometry & geom_;
   oops::Variables vars_;
-  oops::Variables varsLongName_;
   util::DateTime time_;
 };
 // -------------------------------------------------------------------------------------------------

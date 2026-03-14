@@ -16,7 +16,7 @@ use fckit_mpi_module,            only: fckit_mpi_sum
 use random_mod,                  only: normal_distribution
 
 ! fv3jedi
-use fv3jedi_field_mod,           only: fv3jedi_field, checksame, get_field
+use fv3jedi_field_mod,           only: fv3jedi_field, checksame, checkvalidsubset, hasfield, get_field
 use fv3jedi_fields_mod,          only: fv3jedi_fields
 use fv3jedi_geom_mod,            only: fv3jedi_geom
 use fv3jedi_geom_iter_mod,       only: fv3jedi_geom_iter
@@ -96,9 +96,10 @@ subroutine self_add(self,rhs)
 class(fv3jedi_increment), intent(inout) :: self
 class(fv3jedi_increment), intent(in)    :: rhs
 
-integer :: var
+logical :: found
+integer :: var, selfvar
 
-call checksame(self%fields,rhs%fields,"fv3jedi_increment_mod.self_add")
+call checksame(self%fields, rhs%fields, "fv3jedi_increment_mod.self_add")
 
 do var = 1,self%nf
   self%fields(var)%array = self%fields(var)%array + rhs%fields(var)%array
@@ -130,13 +131,15 @@ subroutine self_sub(self,rhs)
 class(fv3jedi_increment), intent(inout) :: self
 class(fv3jedi_increment), intent(in)    :: rhs
 
-integer :: var
+logical :: found
+integer :: var, selfvar
 
-call checksame(self%fields,rhs%fields,"fv3jedi_increment_mod.self_sub")
+call checksame(self%fields, rhs%fields, "fv3jedi_increment_mod.self_sub")
 
 do var = 1,self%nf
   self%fields(var)%array = self%fields(var)%array - rhs%fields(var)%array
 enddo
+
 
 end subroutine self_sub
 
@@ -206,8 +209,8 @@ type(fv3jedi_field), pointer :: state1p, state2p
 do f = 1, self%nf
 
   !Get pointers to states
-  call get_field(state1_fields, self%fields(f)%short_name, state1p)
-  call get_field(state2_fields, self%fields(f)%short_name, state2p)
+  call get_field(state1_fields, self%fields(f)%long_name, state1p)
+  call get_field(state2_fields, self%fields(f)%long_name, state2p)
 
   !inc = state - state
   self%fields(f)%array = state1p%array - state2p%array
@@ -231,7 +234,7 @@ type(fv3jedi_geom),        intent(in)    :: geom
 ! Locals
 integer :: ndir,idir
 integer, allocatable :: ixdir(:),iydir(:),ildir(:),itdir(:)
-character(len=32), allocatable :: ifdir(:)
+character(len=:), allocatable :: ifdir(:)
 character(len=:), allocatable :: str_array(:)
 type(fv3jedi_field), pointer :: dirac_field
 
@@ -293,11 +296,35 @@ real(kind=kind_real),     intent(inout) :: values(:)
 integer :: var, nz, ii
 
 ii = 0
-do var = 1,self%nf
-  nz = self%fields(var)%npz
-  values(ii+1:ii+nz) = self%fields(var)%array(geoiter%iindex, geoiter%jindex,:)
-  ii = ii + nz
-enddo
+!2D iterator
+if (geoiter%geom%iterator_dimension .eq. 2) then
+  do var = 1,self%nf
+    nz = self%fields(var)%npz
+    values(ii+1:ii+nz) = self%fields(var)%array(geoiter%iindex, geoiter%jindex,:)
+    ii = ii + nz
+  enddo
+!3D iterator
+else if (geoiter%geom%iterator_dimension .eq. 3) then
+ !2d variables
+  if(0 == geoiter%kindex) then
+    do var = 1,self%nf
+      if(1 == self%fields(var)%npz) then
+        ii = ii + 1
+        values(ii) = self%fields(var)%array(geoiter%iindex, geoiter%jindex, 1)
+      end if
+    enddo
+ !3d variables
+  else if(0 < geoiter%kindex) then
+    do var = 1,self%nf
+      if(1 < self%fields(var)%npz) then
+        ii = ii + 1
+        values(ii) = self%fields(var)%array(geoiter%iindex, geoiter%jindex, geoiter%kindex)
+      end if
+    enddo
+  end if
+else
+  call abor1_ftn('fv3jedi_increment_mod%getpoint: unknown geoiter%geom%iterator_dimension')
+end if
 
 end subroutine getpoint
 
@@ -313,11 +340,35 @@ real(kind=kind_real),     intent(in)    :: values(:)
 integer :: var, nz, ii
 
 ii = 0
-do var = 1,self%nf
-  nz = self%fields(var)%npz
-  self%fields(var)%array(geoiter%iindex, geoiter%jindex,:) = values(ii+1:ii+nz)
-  ii = ii + nz
-enddo
+!2D iterator
+if (geoiter%geom%iterator_dimension .eq. 2) then
+  do var = 1,self%nf
+    nz = self%fields(var)%npz
+    self%fields(var)%array(geoiter%iindex, geoiter%jindex,:) = values(ii+1:ii+nz)
+    ii = ii + nz
+  enddo
+!3D iterator
+else if (geoiter%geom%iterator_dimension .eq. 3) then
+ !2d variables
+  if(0 == geoiter%kindex) then
+    do var = 1,self%nf
+      if(1 == self%fields(var)%npz) then
+        ii = ii + 1
+        self%fields(var)%array(geoiter%iindex, geoiter%jindex, 1) = values(ii)
+      end if
+    enddo
+ !3d variables
+  else if(0 < geoiter%kindex) then
+    do var = 1,self%nf
+      if(1 < self%fields(var)%npz) then
+        ii = ii + 1
+        self%fields(var)%array(geoiter%iindex, geoiter%jindex, geoiter%kindex) = values(ii)
+      end if
+    enddo
+  end if
+else
+  call abor1_ftn('fv3jedi_increment_mod%setpoint: unknown geoiter%geom%iterator_dimension')
+end if
 
 end subroutine setpoint
 

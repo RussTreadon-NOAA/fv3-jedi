@@ -7,14 +7,13 @@ module moisture_vt_mod
 
 use fv3jedi_kinds_mod, only: kind_real
 use fv3jedi_geom_mod, only: fv3jedi_geom
-use fv3jedi_constants_mod, only: rdry,grav,tice,zvir
+use fv3jedi_constants_mod, only: constant
 
 use pressure_vt_mod, only: delp_to_pe_p_logp
 
 implicit none
 private
 
-public crtm_ade_efr
 public crtm_mixratio
 public crtm_mixratio_tl
 public crtm_mixratio_ad
@@ -29,227 +28,6 @@ public q4_to_q2
 public q2_to_q4
 
 contains
-
-!>----------------------------------------------------------------------------
-!> Compute cloud area density and effective radius for the crtm --------------
-!>----------------------------------------------------------------------------
-
-subroutine crtm_ade_efr( geom,p,T,delp,sea_frac,q,ql,qi,ql_ade,qi_ade,ql_efr,qi_efr, &
-                         qr,qs,qr_ade,qs_ade,qr_efr,qs_efr)
-
-implicit none
-
-!Arguments
-type(fv3jedi_geom)  , intent(in)  :: geom
-real(kind=kind_real), intent(in)  :: p(geom%isc:geom%iec,geom%jsc:geom%jec, 1:geom%npz)     !Pressure | Pa
-real(kind=kind_real), intent(in)  :: t(geom%isc:geom%iec,geom%jsc:geom%jec, 1:geom%npz)     !Temperature | K
-real(kind=kind_real), intent(in)  :: delp(geom%isc:geom%iec,geom%jsc:geom%jec, 1:geom%npz)  !Layer thickness | Pa
-real(kind=kind_real), intent(in)  :: sea_frac(geom%isc:geom%iec,geom%jsc:geom%jec)          !Sea fraction | 1
-real(kind=kind_real), intent(in)  :: q(geom%isc:geom%iec,geom%jsc:geom%jec, 1:geom%npz)     !Specific humidity | kg/kg
-real(kind=kind_real), intent(in)  :: ql(geom%isc:geom%iec,geom%jsc:geom%jec, 1:geom%npz)    !Mixing ratio of cloud liquid water | kg/kg
-real(kind=kind_real), intent(in)  :: qi(geom%isc:geom%iec,geom%jsc:geom%jec, 1:geom%npz)    !Mixing ratio of cloud ice water | kg/kg
-real(kind=kind_real), intent(in), optional  :: qr(geom%isc:geom%iec,geom%jsc:geom%jec, 1:geom%npz)    !Mixing ratio of cloud rain water | kg/kg
-real(kind=kind_real), intent(in), optional  :: qs(geom%isc:geom%iec,geom%jsc:geom%jec, 1:geom%npz)    !Mixing ratio of cloud snow water | kg/kg
-
-real(kind=kind_real), intent(out) :: ql_ade(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz) !area density for cloud liquid water | kg/m^2
-real(kind=kind_real), intent(out) :: qi_ade(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz) !area density for cloud ice water | kg/m^2
-real(kind=kind_real), intent(out) :: ql_efr(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz) !efr for cloud liquid water | microns
-real(kind=kind_real), intent(out) :: qi_efr(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz) !efr for cloud ice | microns
-real(kind=kind_real), intent(out), optional :: qr_ade(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz) !area density for cloud rain water | kg/m^2
-real(kind=kind_real), intent(out), optional :: qs_ade(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz) !area density for cloud snow water | kg/m^2
-real(kind=kind_real), intent(out), optional :: qr_efr(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz) !efr for cloud rain water | microns
-real(kind=kind_real), intent(out), optional :: qs_efr(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz) !efr for cloud snow water | microns
-
-!Locals
-integer :: isc,iec,jsc,jec,npz
-integer :: i,j,k
-logical, allocatable :: seamask(:,:)
-real(kind=kind_real) :: tem1, tem2, tem3, kgkg_to_kgm2
-real(kind=kind_real) :: wc_in_g_m3, xqq
-logical :: have_qr, have_qs
-
-if(present(qr)) then
-  have_qr = .true.
-else
-  have_qr = .false.
-endif
-if(present(qs)) then
-  have_qs = .true.
-else
-  have_qs = .false.
-endif
-
-! Grid convenience
-! ----------------
-isc = geom%isc
-iec = geom%iec
-jsc = geom%jsc
-jec = geom%jec
-npz = geom%npz
-
-
-! Set outputs to zero
-! -------------------
-ql_ade = 0.0_kind_real
-qi_ade = 0.0_kind_real
-ql_efr = 0.0_kind_real
-qi_efr = 0.0_kind_real
-if(have_qr) then
-  qr_ade = 0.0_kind_real
-  qr_efr = 0.0_kind_real
-endif
-if(have_qs) then
-  qs_ade = 0.0_kind_real
-  qs_efr = 0.0_kind_real
-endif
-
-! Sea mask
-! --------
-allocate(seamask(isc:iec,jsc:jec))
-seamask = .false.
-do j = jsc,jec
-  do i = isc,iec
-     seamask(i,j) = min(max(0.0_kind_real,sea_frac(i,j)),1.0_kind_real)  >= 0.99_kind_real
-  enddo
-enddo
-
-
-! Convert clouds from kg/kg into kg/m^2
-! -------------------------------------
-do k = 1,npz
-  do j = jsc,jec
-    do i = isc,iec
-       if (seamask(i,j)) then
-
-         kgkg_to_kgm2 = delp(i,j,k) / grav
-         ql_ade(i,j,k) = max(ql(i,j,k),0.0_kind_real) * kgkg_to_kgm2
-         qi_ade(i,j,k) = max(qi(i,j,k),0.0_kind_real) * kgkg_to_kgm2
-
-         if (t(i,j,k) - tice > -20.0_kind_real) then
-            ql_ade(i,j,k) = max(1.001_kind_real*1.0E-6_kind_real,ql_ade(i,j,k))
-         endif
-
-         if (t(i,j,k) < tice) then
-            qi_ade(i,j,k) = max(1.001_kind_real*1.0E-6_kind_real,qi_ade(i,j,k))
-         endif
-
-       endif
-    enddo
-  enddo
-enddo
-
-! Cloud liquid water effective radius
-! -----------------------------------
-do k = 1,npz
-  do j = jsc,jec
-    do i = isc,iec
-       if (seamask(i,j)) then
-         tem1 = max(0.0_kind_real,(tice-t(i,j,k))*0.05_kind_real)
-         ql_efr(i,j,k) = 5.0_kind_real + 5.0_kind_real * min(1.0_kind_real, tem1)
-       endif
-    enddo
-  enddo
-enddo
-
-
-! Cloud ice water effective radius
-! ---------------------------------
-do k = 1,npz
-  do j = jsc,jec
-    do i = isc,iec
-
-      if (seamask(i,j)) then
-
-        tem2 = t(i,j,k) - tice
-        tem1 = grav/rdry
-        tem3 = tem1 * qi_ade(i,j,k) * (p(i,j,k)/delp(i,j,k))/t(i,j,k) * (1.0_kind_real + zvir * max(q(i,j,k),0.0_kind_real))
-
-        if (tem2 < -50.0_kind_real ) then
-           qi_efr(i,j,k) =  (1250._kind_real/9.917_kind_real)*tem3**0.109_kind_real
-        elseif (tem2 < -40.0_kind_real ) then
-           qi_efr(i,j,k) =  (1250._kind_real/9.337_kind_real)*tem3**0.08_kind_real
-        elseif (tem2 < -30.0_kind_real ) then
-           qi_efr(i,j,k) =  (1250._kind_real/9.208_kind_real)*tem3**0.055_kind_real
-        else
-           qi_efr(i,j,k) =  (1250._kind_real/9.387_kind_real)*tem3**0.031_kind_real
-        endif
-
-      endif
-
-    enddo
-  enddo
-enddo
-
-
-ql_ade = max(0.0_kind_real,ql_ade)
-qi_ade = max(0.0_kind_real,qi_ade)
-ql_efr = max(0.0_kind_real,ql_efr)
-qi_efr = max(0.0_kind_real,qi_efr)
-
-
-! Rain water effective radius (Taken from set_crtm_cloudmod.f90 in GSI for GEOS qr & qs .)
-! ---------------------------------
-if( have_qr ) then
-  do k = 1,npz
-    do j = jsc,jec
-      do i = isc,iec
-
-        if (seamask(i,j)) then
-          kgkg_to_kgm2 = delp(i,j,k) / grav
-          qr_ade(i,j,k) = max(qr(i,j,k),0.0_kind_real) * kgkg_to_kgm2
-          tem1 = grav/rdry
-          wc_in_g_m3 = 1000.0_kind_real * tem1 * qr_ade(i,j,k) * (p(i,j,k)/delp(i,j,k)) &
-                             /t(i,j,k) * (1.0_kind_real + zvir * max(q(i,j,k),0.0_kind_real))
-          if (wc_in_g_m3 .ne. 0.0_kind_real) then
-            xqq = log10(wc_in_g_m3)
-          else
-            xqq = 0.0_kind_real
-          endif
-          qr_efr(i,j,k) = 7.934_kind_real*xqq*xqq*xqq + 90.858_kind_real*xqq*xqq &
-                        + 387.807_kind_real*xqq + 679.939_kind_real
-          qr_efr(i,j,k) = max(qr_efr(i,j,k), 100.0_kind_real)
-        endif
-
-      enddo
-    enddo
-  enddo
-  qr_ade = max(0.0_kind_real,qr_ade)
-  qr_efr = max(0.0_kind_real,qr_efr)
-endif
-
-! Snow water effective radius (Taken from set_crtm_cloudmod.f90 in GSI for GEOS qr & qs.)
-! ---------------------------------
-if( have_qs ) then
-  do k = 1,npz
-    do j = jsc,jec
-      do i = isc,iec
-
-        if (seamask(i,j)) then
-          kgkg_to_kgm2 = delp(i,j,k) / grav
-          qs_ade(i,j,k) = max(qs(i,j,k),0.0_kind_real) * kgkg_to_kgm2
-          tem1 = grav/rdry
-          wc_in_g_m3 = 1000.0_kind_real * tem1 * qs_ade(i,j,k) * (p(i,j,k)/delp(i,j,k)) &
-                             /t(i,j,k) * (1.0_kind_real + zvir * max(q(i,j,k),0.0_kind_real))
-          if (wc_in_g_m3 .ne. 0.0_kind_real) then
-            xqq = log10(wc_in_g_m3)
-          else
-            xqq = 0.0_kind_real
-          endif
-          qs_efr(i,j,k) = 9.33_kind_real*xqq*xqq*xqq +  84.779_kind_real*xqq*xqq &
-                        + 351.1345_kind_real*xqq + 691.391_kind_real !Liu DDA_type5
-          qs_efr(i,j,k) = max(qs_efr(i,j,k), 100.0_kind_real)
-        endif
-
-      enddo
-    enddo
-  enddo
-  qs_ade = max(0.0_kind_real,qs_ade)
-  qs_efr = max(0.0_kind_real,qs_efr)
-endif
-
-deallocate(seamask)
-
-end subroutine crtm_ade_efr
 
 !----------------------------------------------------------------------------
 ! Compute mixing ratio from specific humidity -------------------------------
@@ -297,7 +75,7 @@ enddo
 ! Convert specific humidity
 ! -------------------------
 c3 = 1.0_kind_real / (1.0_kind_real - q_pos)
-qmr = 1000.0_kind_real * q_pos * c3
+qmr = q_pos * c3
 
 end subroutine crtm_mixratio
 
@@ -351,7 +129,7 @@ enddo
 ! -------------------------
 c3 = 1.0_kind_real / (1.0_kind_real - q_pos)
 c3_tl = -((-q_tl_pos)/(1.0_kind_real-q_pos)**2)
-qmr_tl = 1000.0_kind_real*(q_tl_pos*c3+q_pos*c3_tl)
+qmr_tl = (q_tl_pos*c3+q_pos*c3_tl)
 
 end subroutine crtm_mixratio_tl
 
@@ -402,8 +180,8 @@ enddo
 ! Convert specific humidity
 ! -------------------------
 c3 = 1.0_kind_real/(1.0_kind_real-q_pos)
-c3_ad = 1000.0_kind_real*q_pos*qmr_ad
-q_ad_pos = c3_ad/(1.0_kind_real-q_pos)**2 + 1000.0_kind_real*c3*qmr_ad
+c3_ad = q_pos*qmr_ad
+q_ad_pos = c3_ad/(1.0_kind_real-q_pos)**2 + c3*qmr_ad
 qmr_ad = 0.0_kind_real
 
 
@@ -587,11 +365,7 @@ subroutine get_qsat(geom,delp,t,q,qsat)
 
   call delp_to_pe_p_logp(geom,delp,pe,pm)
 
-  do j = geom%jsc,geom%jec
-    do i = geom%isc,geom%iec
-      call qsmith(geom%npz,t(i,j,:),q(i,j,:),pm(i,j,:),qsat(i,j,:))
-    enddo
-  enddo
+  call qsmith(geom,t,q,pm,qsat)
 
   deallocate(pm)
   deallocate(pe)
@@ -600,22 +374,26 @@ end subroutine get_qsat
 
 !----------------------------------------------------------------------------
 
-subroutine qsmith(nlev,t,sphum,pl,qs)
+subroutine qsmith(geom,t,sphum,pl,qs)
 
   implicit none
-  integer,         intent(in)  :: nlev
-  real(kind_real), intent(in)  :: t(nlev)
-  real(kind_real), intent(in)  :: sphum(nlev)
-  real(kind_real), intent(in)  :: pl(nlev)
-  real(kind_real), intent(out) :: qs(nlev)
+  type(fv3jedi_geom), intent(in)  :: geom
+  real(kind_real),    intent(in)  ::     t(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)
+  real(kind_real),    intent(in)  :: sphum(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)
+  real(kind_real),    intent(in)  ::    pl(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)
+  real(kind_real),    intent(out) ::    qs(geom%isc:geom%iec,geom%jsc:geom%jec,1:geom%npz)
 
   real(kind_real), parameter :: esl = 0.621971831
   real(kind_real), allocatable :: table(:), des(:)
 
-  real(kind_real) :: es
+  real(kind_real) :: es, tice,zvir
   real(kind_real) :: ap1, eps10
-  integer :: k, it
+  integer :: i, j, k, it
   integer, parameter :: length=2621
+
+  ! Constants
+  tice = constant('tice')
+  zvir = constant('zvir')
 
   eps10  = 10.0_kind_real*esl
 
@@ -628,12 +406,16 @@ subroutine qsmith(nlev,t,sphum,pl,qs)
   enddo
   des(length) = des(length-1)
 
-  do k=1,nlev
-    ap1 = 10.0_kind_real*dim(t(k), tice-160.0_kind_real) + 1.0_kind_real
-    ap1 = min(2621.0_kind_real, ap1)
-    it = int(ap1)
-    es = table(it) + (ap1-it)*des(it)
-    qs(k) = esl*es*(1.0_kind_real+zvir*sphum(k))/(pl(k))
+  do k=1,geom%npz
+    do j = geom%jsc,geom%jec
+      do i = geom%isc,geom%iec
+        ap1 = 10.0_kind_real*dim(t(i,j,k), tice-160.0_kind_real) + 1.0_kind_real
+        ap1 = min(2621.0_kind_real, ap1)
+        it = int(ap1)
+        es = table(it) + (ap1-it)*des(it)
+        qs(i,j,k) = esl*es*(1.0_kind_real+zvir*sphum(i,j,k))/(pl(i,j,k))
+      enddo
+    enddo
   enddo
 
   deallocate(table,des)

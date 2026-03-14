@@ -29,19 +29,19 @@ class IOStructuredGridParameters : public IOParametersBase {
   OOPS_CONCRETE_PARAMETERS(IOStructuredGridParameters, IOParametersBase)
 
  public:
-  // Type of structured grid to write/read
+  // Type of structured grid to write
   oops::Parameter<std::string> outputGridType{"gridtype", "gridtype", "F12", this};
 
-  // Filename of output/input (supports datetime formatting)
+  // Filename of output
   oops::Parameter<std::string> filename{"filename", "filename",
                                         "cube_to_geometric_%Y%m%dT%H%M%S.nc4", this};
 
-  // Interpolator type used by GlobalInterpolator
+  // Interpolator type
   oops::Parameter<std::string> interpolator{"local interpolator type", "local interpolator type",
                                             "oops unstructured grid interpolator",
                                             this};
 
-  // Optionally config may contain member (ensemble)
+  // Optionally config may contain member
   oops::OptionalParameter<int> member{"member", "ensemble member number", this};
 
   // Floating point precision in bytes for NetCDF write
@@ -58,7 +58,6 @@ class IOStructuredGridParameters : public IOParametersBase {
 };
 
 // -------------------------------------------------------------------------------------------------
-
 class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructuredGrid> {
  public:
   static const std::string classname() {return "fv3jedi::IOStructuredGrid";}
@@ -67,7 +66,6 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
 
   IOStructuredGrid(const Geometry &, const Parameters_ &);
   ~IOStructuredGrid();
-
   void read(State &, const eckit::LocalConfiguration &,
             const eckit::LocalConfiguration &) const override;
   void read(Increment &, const eckit::LocalConfiguration &,
@@ -78,10 +76,8 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
              const eckit::LocalConfiguration &) const override;
 
  private:
-  // Print method
+  // Methods
   void print(std::ostream &) const override;
-
-  // Write helpers
   template <typename T>
   void interpAndWrite(const T & obj, const std::string & label,
                       const eckit::LocalConfiguration & fileionames,
@@ -90,7 +86,6 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
                              const eckit::LocalConfiguration &,
                              const eckit::LocalConfiguration &) const;
 
-  // Read helpers
   template <typename T>
   void readAndInterp(T & obj, const std::string & label,
                      const eckit::LocalConfiguration & fileionames,
@@ -98,23 +93,14 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
   void readStructuredFields(const util::DateTime &, atlas::FieldSet &,
                             const eckit::LocalConfiguration & ioNames) const;
 
-  // Geometry reference
-  const Geometry & geom_;
-
-  // Parameters
-  Parameters_ params_;
-
-  // Grid string ("latlon" or "gaussian")
-  std::string gridStr_;
-
-  // Write: serial StructuredColumns (all points on rank 0) + GlobalInterpolator cube->structured
-  std::unique_ptr<atlas::functionspace::StructuredColumns> writeFunctionSpace_;
-  std::unique_ptr<oops::GlobalInterpolator> writeInterpolator_;
-
-  // Read: balanced StructuredColumns (points distributed across ranks) +
-  //       GlobalInterpolator structured->cube
-  std::unique_ptr<atlas::functionspace::StructuredColumns> readFunctionSpace_;
+  // Data
+  std::unique_ptr<oops::GlobalInterpolator> interpolator_;
   std::unique_ptr<oops::GlobalInterpolator> readInterpolator_;
+  const Geometry & geom_;
+  std::string gridStr_;
+  Parameters_ params_;
+  std::unique_ptr<atlas::functionspace::StructuredColumns> writeFunctionSpace_;
+  std::unique_ptr<atlas::functionspace::StructuredColumns> readFunctionSpace_;
 };
 
 // -------------------------------------------------------------------------------------------------

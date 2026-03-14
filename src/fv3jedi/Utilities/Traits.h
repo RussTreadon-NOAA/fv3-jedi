@@ -14,8 +14,12 @@
 #include "fv3jedi/GeometryIterator/GeometryIterator.h"
 #include "fv3jedi/Increment/Increment.h"
 #include "fv3jedi/LinearVariableChange/LinearVariableChange.h"
+#include "fv3jedi/ModelData/ModelData.h"
 #include "fv3jedi/State/State.h"
 #include "fv3jedi/VariableChange/VariableChange.h"
+
+#include "fv3jedi//Model/ModelWrapper.h"
+#include "fv3jedi//Tlm/Tlm.h"
 
 #include "fv3jedi/ModelBias/ModelBias.h"
 #include "fv3jedi/ModelBias/ModelBiasIncrement.h"
@@ -23,6 +27,10 @@
 #include "fv3jedi/ModelBias/ModelBiasCovariance.h"
 
 #include "fv3jedi/NormGradient/NormGradient.h"
+
+#include "oops/generic/UnstructuredInterpolator.h"
+
+#include "ufo/obslocalization/ObsLocalization.h"
 
 namespace fv3jedi {
 
@@ -38,9 +46,16 @@ struct Traits {
   typedef fv3jedi::ModelBias            ModelAuxControl;
   typedef fv3jedi::ModelBiasIncrement   ModelAuxIncrement;
   typedef fv3jedi::ModelBiasCovariance  ModelAuxCovariance;
+  typedef fv3jedi::ModelData            ModelData;
+  typedef fv3jedi::ModelWrapper         Model;
   typedef fv3jedi::NormGradient         NormGradient;
   typedef fv3jedi::State                State;
+  typedef fv3jedi::Tlm                  LinearModel;
   typedef fv3jedi::VariableChange       VariableChange;
+
+  typedef oops::UnstructuredInterpolator  LocalInterpolator;
+
+  typedef ufo::ObsLocalization<GeometryIterator>   ObsLocalization;
 };
 
 }  // namespace fv3jedi

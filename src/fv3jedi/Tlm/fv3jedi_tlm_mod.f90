@@ -25,6 +25,7 @@ use fv3jedi_kinds_mod,       only: kind_real
 use fv3jedi_increment_mod,   only: fv3jedi_increment
 use fv3jedi_state_mod,       only: fv3jedi_state
 use fv3jedi_traj_mod,        only: fv3jedi_traj
+use wind_vt_mod,             only: a_to_d, d_to_a, a_to_d_ad, d_to_a_ad
 
 implicit none
 private
@@ -54,7 +55,6 @@ contains
 
 subroutine create(self, geom, conf)
 
-implicit none
 class(fv3jedi_tlm),        intent(inout) :: self
 type(fv3jedi_geom),        intent(in)    :: geom
 type(fckit_configuration), intent(in)    :: conf
@@ -104,7 +104,6 @@ end subroutine create
 
 subroutine delete(self)
 
-implicit none
 class(fv3jedi_tlm), intent(inout) :: self
 
 !Delete the model
@@ -115,174 +114,491 @@ end subroutine delete
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine initialize_ad(self, inc)
+subroutine initialize_ad(self, geom, inc, traj)
 
-implicit none
 class(fv3jedi_tlm),      intent(inout) :: self
+type(fv3jedi_geom),      intent(in)    :: geom
 type(fv3jedi_increment), intent(inout) :: inc
+type(fv3jedi_traj),      intent(in)    :: traj
 
-call inc_to_lm(inc,self%fv3jedi_lm)
+! Make sure the tracers are allocated (true => both traj and pert tracers)
+call self%fv3jedi_lm%allocate_tracers(inc%ntracers, .true.)
+call traj_to_traj(geom, traj, self%fv3jedi_lm)
+
+! The action of finalize_tl is {inc = LM; LM = 0}, the adjoint of which is {LM* = inc*; inc* = 0}.
+! To keep the code simple, we first perform the extra step {LM* = 0}, so that we can then re-use
+! the implementation of lm_to_inc_ad, which performs {LM* = LM* + inc*; inc* = 0}.
+! Replacing lm_to_inc_ad with a method that just does the assignment may be a small optimization.
+
+! Zero prior LM state
+self%fv3jedi_lm%pert%u = 0.0_kind_real
+self%fv3jedi_lm%pert%v = 0.0_kind_real
+self%fv3jedi_lm%pert%t = 0.0_kind_real
+self%fv3jedi_lm%pert%delp = 0.0_kind_real
+if (allocated(self%fv3jedi_lm%pert%tracers)) self%fv3jedi_lm%pert%tracers = 0.0_kind_real
+if (allocated(self%fv3jedi_lm%pert%w)) self%fv3jedi_lm%pert%w = 0.0_kind_real
+if (allocated(self%fv3jedi_lm%pert%delz)) self%fv3jedi_lm%pert%delz = 0.0_kind_real
+
+call lm_to_inc_ad(geom, self%fv3jedi_lm,inc)
 call self%fv3jedi_lm%init_ad()
-call lm_to_inc(self%fv3jedi_lm,inc)
 
 end subroutine initialize_ad
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine initialize_tl(self, inc)
+subroutine initialize_tl(self, geom, inc, traj)
 
-implicit none
 class(fv3jedi_tlm),      intent(inout) :: self
+type(fv3jedi_geom),      intent(in)    :: geom
 type(fv3jedi_increment), intent(inout) :: inc
+type(fv3jedi_traj),      intent(in)    :: traj
 
-call inc_to_lm(inc,self%fv3jedi_lm)
+! Make sure the tracers are allocated (true => both traj and pert tracers)
+call self%fv3jedi_lm%allocate_tracers(inc%ntracers, .true.)
+call traj_to_traj(geom, traj, self%fv3jedi_lm)
+
+call inc_to_lm(geom, inc,self%fv3jedi_lm)
 call self%fv3jedi_lm%init_tl()
-call lm_to_inc(self%fv3jedi_lm,inc)
+call lm_to_inc(geom, self%fv3jedi_lm,inc)
 
 end subroutine initialize_tl
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine step_ad(self, inc, traj)
+subroutine step_ad(self, geom, inc, traj)
 
-implicit none
 class(fv3jedi_tlm),      intent(inout) :: self
+type(fv3jedi_geom),      intent(in)    :: geom
 type(fv3jedi_increment), intent(inout) :: inc
 type(fv3jedi_traj),      intent(in)    :: traj
 
-call traj_to_traj(traj,self%fv3jedi_lm)
+call traj_to_traj(geom, traj, self%fv3jedi_lm)
 
-call inc_to_lm(inc,self%fv3jedi_lm)
+call lm_to_inc_ad(geom, self%fv3jedi_lm,inc)
 call self%fv3jedi_lm%step_ad()
-call lm_to_inc(self%fv3jedi_lm,inc)
 
 end subroutine step_ad
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine step_tl(self, inc, traj)
+subroutine step_tl(self, geom, inc, traj)
 
-implicit none
 class(fv3jedi_tlm),      intent(inout) :: self
+type(fv3jedi_geom),      intent(in)    :: geom
 type(fv3jedi_increment), intent(inout) :: inc
 type(fv3jedi_traj),      intent(in)    :: traj
 
-call traj_to_traj(traj,self%fv3jedi_lm)
+call traj_to_traj(geom, traj, self%fv3jedi_lm)
 
-call inc_to_lm(inc,self%fv3jedi_lm)
 call self%fv3jedi_lm%step_tl()
-call lm_to_inc(self%fv3jedi_lm,inc)
+call lm_to_inc(geom, self%fv3jedi_lm,inc)
 
 end subroutine step_tl
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine finalize_ad(self, inc)
+subroutine finalize_ad(self, geom, inc)
 
-implicit none
 class(fv3jedi_tlm),      intent(inout) :: self
+type(fv3jedi_geom),      intent(in)    :: geom
 type(fv3jedi_increment), intent(inout) :: inc
 
-call inc_to_lm(inc,self%fv3jedi_lm)
+call lm_to_inc_ad(geom, self%fv3jedi_lm,inc)
 call self%fv3jedi_lm%final_ad()
-call lm_to_inc(self%fv3jedi_lm,inc)
+call inc_to_lm_ad(geom, inc,self%fv3jedi_lm)
 
 end subroutine finalize_ad
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine finalize_tl(self, inc)
+subroutine finalize_tl(self, geom, inc)
 
-implicit none
 class(fv3jedi_tlm),      intent(inout) :: self
+type(fv3jedi_geom),      intent(in)    :: geom
 type(fv3jedi_increment), intent(inout) :: inc
 
-call inc_to_lm(inc,self%fv3jedi_lm)
 call self%fv3jedi_lm%final_tl()
-call lm_to_inc(self%fv3jedi_lm,inc)
+call lm_to_inc(geom, self%fv3jedi_lm,inc)
+
+! Destroy the LM state
+self%fv3jedi_lm%pert%u = 0.0_kind_real
+self%fv3jedi_lm%pert%v = 0.0_kind_real
+self%fv3jedi_lm%pert%t = 0.0_kind_real
+self%fv3jedi_lm%pert%delp = 0.0_kind_real
+if (allocated(self%fv3jedi_lm%pert%tracers)) self%fv3jedi_lm%pert%tracers = 0.0_kind_real
+if (allocated(self%fv3jedi_lm%pert%w)) self%fv3jedi_lm%pert%w = 0.0_kind_real
+if (allocated(self%fv3jedi_lm%pert%delz)) self%fv3jedi_lm%pert%delz = 0.0_kind_real
 
 end subroutine finalize_tl
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine inc_to_lm(inc, lm)
+subroutine inc_to_lm(geom, inc, lm)
 
-implicit none
+type(fv3jedi_geom),      intent(in)    :: geom
 type(fv3jedi_increment), intent(in)    :: inc
 type(fv3jedi_lm_type),   intent(inout) :: lm
 
-real(kind=kind_real), pointer, dimension(:,:,:) :: ud
-real(kind=kind_real), pointer, dimension(:,:,:) :: vd
+integer :: ft, f, index
+logical :: sphum_found = .false.
 
-! Bounds mismatch for D-Grid winds so first get pointer
-call inc%get_field('ud', ud  )
-call inc%get_field('vd', vd  )
-lm%pert%u = ud(inc%isc:inc%iec,inc%jsc:inc%jec,1:inc%npz)
-lm%pert%v = vd(inc%isc:inc%iec,inc%jsc:inc%jec,1:inc%npz)
+real(kind=kind_real), allocatable, dimension(:,:,:) :: ud, vd
+real(kind=kind_real), pointer, dimension(:,:,:) :: ua => null()
+real(kind=kind_real), pointer, dimension(:,:,:) :: va => null()
 
-call inc%get_field('t'      , lm%pert%t   )
-call inc%get_field('delp'   , lm%pert%delp)
-call inc%get_field('sphum'  , lm%pert%qv  )
-call inc%get_field('ice_wat', lm%pert%qi  )
-call inc%get_field('liq_wat', lm%pert%ql  )
+
+! Convert the increment A-Grid winds to model D-Grid winds
+! --------------------------------------------------------
+
+! Get pointers to A-Grid winds
+call inc%get_field('eastward_wind', ua)
+call inc%get_field('northward_wind', va)
+
+! Allocate some temporary D-Grid winds with edges
+allocate(ud(geom%isc:geom%iec  ,geom%jsc:geom%jec+1,1:geom%npz))
+allocate(vd(geom%isc:geom%iec+1,geom%jsc:geom%jec  ,1:geom%npz))
+
+! Convert
+call a_to_d(geom, ua, va, ud, vd)
+
+! Copy D-Grid to model internal
+lm%pert%u(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = ud(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+lm%pert%v(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = vd(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+
+
+! Temperature / pressure
+! ----------------------
+call inc%get_field('air_temperature', lm%pert%t)
+call inc%get_field('air_pressure_thickness', lm%pert%delp)
+
+
+! Tracers
+! -------
+ft = 1
+do f = 1, inc%nf
+  if (inc%fields(f)%tracer) then
+    if (trim(inc%fields(f)%long_name) == 'water_vapor_mixing_ratio_wrt_moist_air') then
+      index = 1
+      sphum_found = .true.
+    else
+      ft = ft + 1
+      index = ft
+    end if
+    lm%pert%tracers(:,:,:,index) = inc%fields(f)%array
+    lm%pert%tracer_names(index) = inc%fields(f)%long_name
+  end if
+end do
+
+if(.not.sphum_found) then
+  call abor1_ftn("inc_to_lm: sphum is not listed in 'state variables'")
+end if
 
 ! Optional fields
-if (inc%has_field('o3mr'   )) call inc%get_field('o3mr'   , lm%pert%o3  )
-if (inc%has_field('o3ppmv' )) call inc%get_field('o3ppmv' , lm%pert%o3  )
-if (inc%has_field('w'      )) call inc%get_field('w'      , lm%pert%w   )
-if (inc%has_field('delz'   )) call inc%get_field('delz'   , lm%pert%delz)
+! ---------------
+if (inc%has_field('upward_air_velocity')) call inc%get_field('upward_air_velocity', lm%pert%w)
+if (inc%has_field('layer_thickness')) call inc%get_field('layer_thickness', lm%pert%delz)
 
 end subroutine inc_to_lm
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine lm_to_inc(lm, inc)
+subroutine lm_to_inc(geom, lm, inc)
 
-implicit none
+type(fv3jedi_geom),      intent(in)    :: geom
 type(fv3jedi_lm_type),   intent(in)    :: lm
 type(fv3jedi_increment), intent(inout) :: inc
 
-real(kind=kind_real), pointer, dimension(:,:,:) :: ud
-real(kind=kind_real), pointer, dimension(:,:,:) :: vd
+integer :: ft, f, index
+logical :: sphum_found = .false.
 
-! Bounds mismatch for D-Grid winds so first get pointer
-call inc%get_field('ud'     , ud  )
-call inc%get_field('vd'     , vd  )
-ud(inc%isc:inc%iec,inc%jsc:inc%jec,1:inc%npz)   = lm%pert%u
-vd(inc%isc:inc%iec,inc%jsc:inc%jec,1:inc%npz)   = lm%pert%v
+real(kind=kind_real), allocatable, dimension(:,:,:) :: ud, vd
+real(kind=kind_real), pointer, dimension(:,:,:) :: ua => null()
+real(kind=kind_real), pointer, dimension(:,:,:) :: va => null()
 
-call inc%put_field('t'      , lm%pert%t   )
-call inc%put_field('delp'   , lm%pert%delp)
-call inc%put_field('sphum'  , lm%pert%qv  )
-call inc%put_field('ice_wat', lm%pert%qi  )
-call inc%put_field('liq_wat', lm%pert%ql  )
+! Convert internal D-Grid winds to A-Grid winds
+! ---------------------------------------------
+
+! Allocate D-Grid winds and copy to internal part
+allocate(ud(geom%isc:geom%iec  ,geom%jsc:geom%jec+1,1:geom%npz))
+allocate(vd(geom%isc:geom%iec+1,geom%jsc:geom%jec  ,1:geom%npz))
+ud = 0.0_kind_real
+ud(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = lm%pert%u(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+vd = 0.0_kind_real
+vd(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = lm%pert%v(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+
+! Pointer to increment A-Grid winds
+call inc%get_field('eastward_wind', ua)
+call inc%get_field('northward_wind', va)
+
+! Convert to A-Grid
+call d_to_a(geom, ud, vd, ua, va)
+
+
+! Temperature / pressure
+! ----------------------
+call inc%put_field('air_temperature', lm%pert%t)
+call inc%put_field('air_pressure_thickness', lm%pert%delp)
+
+
+! Tracers
+! -------
+ft = 1
+do f = 1, inc%nf
+  if (inc%fields(f)%tracer) then
+    if (trim(inc%fields(f)%long_name) == 'water_vapor_mixing_ratio_wrt_moist_air') then
+      index = 1
+      sphum_found = .true.
+    else
+      ft = ft + 1
+      index = ft
+    endif
+    inc%fields(f)%array = lm%pert%tracers(:,:,:,index)
+    if (inc%fields(f)%long_name .ne. lm%pert%tracer_names(index)) then
+      call abor1_ftn("lm_to_inc: Tracer names do not match")
+    end if
+  end if
+end do
+
+if(.not.sphum_found) then
+  call abor1_ftn("lm_to_inc: sphum is not listed in 'state variables'")
+end if
+
 
 ! Optional fields
-if (inc%has_field('o3mr'   )) call inc%put_field('o3mr'   , lm%pert%o3  )
-if (inc%has_field('o3ppmv' )) call inc%put_field('o3ppmv' , lm%pert%o3  )
-if (inc%has_field('w'      )) call inc%put_field('w'      , lm%pert%w   )
-if (inc%has_field('delz'   )) call inc%put_field('delz'   , lm%pert%delz)
+! ---------------
+if (inc%has_field('upward_air_velocity')) call inc%put_field('upward_air_velocity', lm%pert%w)
+if (inc%has_field('layer_thickness')) call inc%put_field('layer_thickness', lm%pert%delz)
+
 
 end subroutine lm_to_inc
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine traj_to_traj( traj, lm )
+subroutine inc_to_lm_ad(geom, inc, lm)
 
 implicit none
+type(fv3jedi_geom),      intent(in)    :: geom
+type(fv3jedi_increment), intent(inout) :: inc
+type(fv3jedi_lm_type),   intent(inout) :: lm
+
+integer :: ft, f, index
+logical :: sphum_found = .false.
+
+real(kind=kind_real), allocatable, dimension(:,:,:) :: ud, vd
+real(kind=kind_real), pointer, dimension(:,:,:) :: ua => null()
+real(kind=kind_real), pointer, dimension(:,:,:) :: va => null()
+real(kind=kind_real), pointer, dimension(:,:,:) :: tmp => null()
+
+! Optional fields
+! ---------------
+if (inc%has_field('upward_air_velocity')) then
+  call inc%get_field('upward_air_velocity', tmp)
+  tmp = tmp + lm%pert%w
+end if
+if (inc%has_field('layer_thickness')) then
+  call inc%get_field('layer_thickness', tmp)
+  tmp = tmp + lm%pert%delz
+end if
+
+! Tracers
+! -------
+ft = 1
+do f = 1, inc%nf
+  if (inc%fields(f)%tracer) then
+    if (trim(inc%fields(f)%long_name) == 'water_vapor_mixing_ratio_wrt_moist_air') then
+      index = 1
+      sphum_found = .true.
+    else
+      ft = ft + 1
+      index = ft
+    endif
+    inc%fields(f)%array = inc%fields(f)%array + lm%pert%tracers(:,:,:,index)
+    if (inc%fields(f)%long_name .ne. lm%pert%tracer_names(index)) then
+      call abor1_ftn("inc_to_lm_ad: Tracer names do not match")
+    end if
+  end if
+end do
+
+if(.not.sphum_found) then
+  call abor1_ftn("inc_to_lm_ad: sphum is not listed in 'state variables'")
+end if
+
+
+! Temperature / pressure
+! ----------------------
+call inc%get_field('air_temperature', tmp)
+tmp = tmp + lm%pert%t
+call inc%get_field('air_pressure_thickness', tmp)
+tmp = tmp + lm%pert%delp
+
+
+! Winds (adjoint of A to D conversion)
+! ------------------------------------
+
+! Allocate some temporary D-Grid winds with edges
+allocate(ud(geom%isc:geom%iec  ,geom%jsc:geom%jec+1,1:geom%npz))
+allocate(vd(geom%isc:geom%iec+1,geom%jsc:geom%jec  ,1:geom%npz))
+! Copy D Grid from the model
+ud = 0.0_kind_real
+ud(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = &
+                                         lm%pert%u(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+vd = 0.0_kind_real
+vd(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = &
+                                         lm%pert%v(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+
+! Get pointers to A-Grid winds
+call inc%get_field('eastward_wind', ua)
+call inc%get_field('northward_wind', va)
+
+! Convert (accumulation is internal)
+call a_to_d_ad(geom, ua, va, ud, vd)
+
+! Zero out the internal model increment
+! -------------------------------------
+lm%pert%u = 0.0_kind_real
+lm%pert%v = 0.0_kind_real
+lm%pert%t = 0.0_kind_real
+lm%pert%delp = 0.0_kind_real
+if (allocated(lm%pert%tracers)) lm%pert%tracers(:,:,:,:) = 0.0_kind_real
+if (inc%has_field('upward_air_velocity')) lm%pert%w = 0.0_kind_real
+if (inc%has_field('layer_thickness')) lm%pert%delz = 0.0_kind_real
+
+end subroutine inc_to_lm_ad
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine lm_to_inc_ad(geom, lm, inc)
+
+implicit none
+type(fv3jedi_geom),      intent(in)    :: geom
+type(fv3jedi_lm_type),   intent(inout) :: lm
+type(fv3jedi_increment), intent(inout) :: inc
+
+integer :: ft, f, index, k
+logical :: sphum_found = .false.
+
+real(kind=kind_real), allocatable, dimension(:,:,:) :: ud, vd
+real(kind=kind_real), pointer, dimension(:,:,:) :: ua   => null()
+real(kind=kind_real), pointer, dimension(:,:,:) :: va   => null()
+real(kind=kind_real), pointer, dimension(:,:,:) :: t    => null()
+real(kind=kind_real), pointer, dimension(:,:,:) :: delp => null()
+real(kind=kind_real), pointer, dimension(:,:,:) :: w    => null()
+real(kind=kind_real), pointer, dimension(:,:,:) :: delz => null()
+
+! Optional fields
+! ---------------
+if (inc%has_field('upward_air_velocity')) then
+  call inc%get_field('upward_air_velocity', w)
+  lm%pert%w = lm%pert%w + w
+end if
+if (inc%has_field('layer_thickness')) then
+  call inc%get_field('layer_thickness', delz)
+  lm%pert%delz = lm%pert%delz + delz
+end if
+
+
+! Tracers
+! -------
+ft = 1
+do f = 1, inc%nf
+  if (inc%fields(f)%tracer) then
+    if (trim(inc%fields(f)%long_name) == 'water_vapor_mixing_ratio_wrt_moist_air') then
+      index = 1
+      sphum_found = .true.
+    else
+      ft = ft + 1
+      index = ft
+    end if
+    lm%pert%tracers(:,:,:,index) = lm%pert%tracers(:,:,:,index) + inc%fields(f)%array
+    lm%pert%tracer_names(index) = inc%fields(f)%long_name
+  end if
+end do
+
+if(.not.sphum_found) then
+  call abor1_ftn("lm_to_inc_ad: sphum is not listed in 'state variables'")
+end if
+
+
+! Temperature / pressure
+! ----------------------
+call inc%get_field('air_temperature', t)
+lm%pert%t = lm%pert%t + t
+call inc%get_field('air_pressure_thickness', delp)
+lm%pert%delp = lm%pert%delp + delp
+
+
+! Adjoint of D-Grid winds to A-Grid winds
+! ---------------------------------------
+
+! Allocate D-Grid winds and copy to internal part
+allocate(ud(geom%isc:geom%iec  ,geom%jsc:geom%jec+1,1:geom%npz))
+allocate(vd(geom%isc:geom%iec+1,geom%jsc:geom%jec  ,1:geom%npz))
+ud = 0.0_kind_real  ! Set to zero because of internal accumulation
+vd = 0.0_kind_real  ! Set to zero because of internal accumulation
+
+! Pointer to increment A-Grid winds
+call inc%get_field('eastward_wind', ua)
+call inc%get_field('northward_wind', va)
+
+! Convert to A-Grid
+call d_to_a_ad(geom, ud, vd, ua, va)
+
+! Copy temporary back into the model
+lm%pert%u(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = &
+                                     lm%pert%u(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) + &
+                                            ud(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+lm%pert%v(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = &
+                                     lm%pert%v(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) + &
+                                            vd(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+
+
+! Here we could call `inc%zero()` but that would zero additional increment fields that aren't
+! participating in the LM forecast, and violate the adjoint. If in the future the increment fields
+! are required to all be LM fields, then the code below could be replaced with just `inc%zero()`.
+ua   = 0.0_kind_real
+va   = 0.0_kind_real
+t    = 0.0_kind_real
+delp = 0.0_kind_real
+if (associated(w)) w = 0.0_kind_real
+if (associated(delz)) delz = 0.0_kind_real
+
+! This assumes all tracers are evolved via LM
+do f = 1, inc%nf
+  if (inc%fields(f)%tracer) then
+    inc%fields(f)%array = 0.0_kind_real
+  end if
+end do
+
+end subroutine lm_to_inc_ad
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine traj_to_traj(geom, traj, lm)
+
+type(fv3jedi_geom),    intent(in)    :: geom
 type(fv3jedi_traj),    intent(in)    :: traj
 type(fv3jedi_lm_type), intent(inout) :: lm
 
-lm%traj%u    = traj%u
-lm%traj%v    = traj%v
+real(kind=kind_real), allocatable, dimension(:,:,:) :: ud, vd
+
+! Convert the A-Grid trajectory to D-Grid trajectory needed by model
+allocate(ud(geom%isc:geom%iec  ,geom%jsc:geom%jec+1,1:geom%npz))
+allocate(vd(geom%isc:geom%iec+1,geom%jsc:geom%jec  ,1:geom%npz))
+call a_to_d(geom, traj%ua, traj%va, ud, vd)
+lm%traj%u(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = &
+                                                ud(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+lm%traj%v(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz) = &
+                                                vd(geom%isc:geom%iec, geom%jsc:geom%jec, 1:geom%npz)
+deallocate(ud, vd)
+
 lm%traj%ua   = traj%ua
 lm%traj%va   = traj%va
 lm%traj%t    = traj%t
 lm%traj%delp = traj%delp
-lm%traj%qv   = traj%qv
-lm%traj%ql   = traj%ql
-lm%traj%qi   = traj%qi
-lm%traj%o3   = traj%o3
+
+! Copy the tracers
+lm%traj%tracers = traj%tracers
+lm%traj%tracer_names  = traj%tracer_names
 
 if (.not. lm%conf%hydrostatic) then
   lm%traj%w    = traj%w

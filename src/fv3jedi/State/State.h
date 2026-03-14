@@ -12,9 +12,11 @@
 #include <string>
 #include <vector>
 
+#include "eckit/config/Configuration.h"
+#include "eckit/mpi/Comm.h"
+
 #include "oops/base/ParameterTraitsVariables.h"
 #include "oops/base/Variables.h"
-#include "oops/base/WriteParametersBase.h"
 #include "oops/util/ObjectCounter.h"
 #include "oops/util/Printable.h"
 
@@ -60,10 +62,21 @@ class StateParameters : public oops::Parameters {
 
 // -------------------------------------------------------------------------------------------------
 
-class StateWriteParameters : public oops::WriteParametersBase {
-  OOPS_CONCRETE_PARAMETERS(StateWriteParameters, WriteParametersBase)
+class StateWriteParameters : public oops::Parameters {
+  OOPS_CONCRETE_PARAMETERS(StateWriteParameters, Parameters)
  public:
+  oops::OptionalParameter<std::string> type{"type", this};
+  oops::OptionalParameter<std::string> exp{"exp", this};
+  oops::OptionalParameter<int> member{"member", this};
+  oops::OptionalParameter<std::string> memberPattern{"member pattern", this};
+  oops::OptionalParameter<util::DateTime> date{"date", this};
+  oops::OptionalParameter<int> iteration{"iteration", this};
+  oops::OptionalParameter<std::string> prefix{"prefix", this};
+  oops::Parameter<bool> dateCols{"date colons", true, this};
   IOParametersWrapper ioParametersWrapper{this};
+  // Additional formats to output
+  oops::OptionalParameter<std::vector<IOParametersWrapper>>
+         additionalIO{"additional output formats", this};
 };
 
 // -------------------------------------------------------------------------------------------------
@@ -72,16 +85,13 @@ class State : public util::Printable, private util::ObjectCounter<State> {
  public:
   static const std::string classname() {return "fv3jedi::State";}
 
-  typedef StateParameters Parameters_;
-  typedef StateWriteParameters WriteParameters_;
-  typedef AnalyticICParameters AnalyticICParameters_;
-
   typedef std::unique_ptr<IOBase> IOBase_;
 
 // Constructor, destructor and basic operators
   State(const Geometry &, const oops::Variables &, const util::DateTime &);
-  State(const Geometry &, const Parameters_ &);
+  State(const Geometry &, const eckit::Configuration &);
   State(const Geometry &, const State &);
+  State(const oops::Variables &, const State &);
   State(const State &);
   virtual ~State();
 
@@ -96,14 +106,18 @@ class State : public util::Printable, private util::ObjectCounter<State> {
   State & operator+=(const Increment &);
 
 // IO and diagnostics
-  void analytic_init(const AnalyticICParameters_ &, const Geometry &);
-  void read(const Parameters_ &);
-  void write(const WriteParameters_ &) const;
+  void analytic_init(const eckit::Configuration &, const Geometry &);
+  void read(const eckit::Configuration &);
+  void write(const eckit::Configuration &) const;
   double norm() const;
 
 // Serialize and deserialize
   size_t serialSize() const;
   void serialize(std::vector<double> &) const;
+  void transpose(const State & FCState, const eckit::mpi::Comm & global,
+     const int ensNum, const int transNum);
+  void deserializeSection(const std::vector<double> &, int &, int &,
+     int &, int &, int &, int &, int &, int &, int &, size_t &);
   void deserialize(const std::vector<double> &, size_t &);
 
 // Add or remove fields

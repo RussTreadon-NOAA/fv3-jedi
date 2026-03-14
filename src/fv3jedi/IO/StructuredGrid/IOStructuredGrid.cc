@@ -27,81 +27,85 @@
 namespace fv3jedi {
 // -------------------------------------------------------------------------------------------------
 static IOMaker<IOStructuredGrid> makerIOStructuredGrid_("structured grid");
+static IOMaker<IOStructuredGrid> makerIOAuxGrid_("auxgrid");
 // -------------------------------------------------------------------------------------------------
-
 IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & params)
-  : IOBase(geom, params.toConfiguration()), params_(params), gridStr_(""), geom_(geom),
-    writeFunctionSpace_(), writeInterpolator_(),
-    readFunctionSpace_(), readInterpolator_() {
+  : IOBase(geom, params.toConfiguration()), interpolator_(), params_(params), gridStr_(""),
+    geom_(geom), writeFunctionSpace_() {
   util::Timer timer(classname(), "IOStructuredGrid");
   oops::Log::trace() << classname() << " constructor starting" << std::endl;
 
-  // Determine the Atlas grid string
+  // Create the Atlas structured grid
   // --------------------------------
+  // Create the string to determine the grid name for Atlas
   std::string outputGridType = params.outputGridType.value();
 
-  // Convert legacy shorthand gridtype to what Atlas expects
+  // Convert the legacy gridtype to what Atlas expects
   if (outputGridType == "latlon") {
     outputGridType = "L" + std::to_string(4*(geom.npx()-1)) + "x" +
                      std::to_string(2*(geom.npy()-1)+1);
   } else if (outputGridType == "gaussian") {
+    // Find best matching Gaussian grid
     outputGridType = "F" + std::to_string(geom.npy()-1);
   }
 
+  // Assert that grid begins with either L or F
   if (outputGridType[0] == 'L') {
     gridStr_ = "latlon";
   } else if (outputGridType[0] == 'F') {
     gridStr_ = "gaussian";
   } else {
+    // This code is only tested with latlon and regular Gaussian grids. With other grids the code
+    // may run but with resulting files containing incorrect or jumbled data.
     ABORT("IOStructuredGrid: outputGridType must begin with L (latlon) or F (regular gaussian). ");
   }
 
   // Generate the Atlas grid object
   const atlas::Grid grid(outputGridType);
 
-  // Atlas configuration with communicator name
+  // Make a custom serial distribution where all points live on rank 0
+  // -----------------------------------------------------------------
+  std::vector<int> zeros(grid.size(), 0);
+  const atlas::grid::Distribution dist(geom.getComm().size(), grid.size(), zeros.data());
+
+  // Create the configuration for the interpolation and populate with the communicator name
+  // --------------------------------------------------------------------------------------
   eckit::LocalConfiguration atlas_conf;
   atlas_conf.set("mpi_comm", geom.getComm().name());
 
-  // --- Write function space: serial (all points on rank 0) ---
-  {
-    std::vector<int> zeros(grid.size(), 0);
-    const atlas::grid::Distribution dist(geom.getComm().size(), grid.size(), zeros.data());
-    writeFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, dist, atlas_conf));
-  }
+  // Structured grid function space
+  // ------------------------------
+  writeFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, dist, atlas_conf));
 
-  // Write interpolator: cube sphere -> serial structured grid
-  // Uses GeometryData built from the cube sphere function space (requires NodeColumns in GDASApp)
-  {
-    oops::GeometryData geomData(geom.functionSpace(), geom.fields(), geom.levelsAreTopDown(),
-                                geom.getComm());
-    writeInterpolator_.reset(new oops::GlobalInterpolator(params.toConfiguration(), geomData,
-                                                          *writeFunctionSpace_,
-                                                          geom.getComm()));
-  }
+  // Create a GeometryData object
+  // ----------------------------
+  oops::GeometryData geomData(geom.functionSpace(), geom.fields(), geom.levelsAreTopDown(),
+                              geom.getComm());
 
-  // --- Read function space: balanced distribution across all ranks ---
-  // A balanced (non-serial) distribution ensures GeometryData can build its triangulation
-  // (GeometryData skips setup when some MPI tasks own zero points, which happens with
-  // the serial distribution used by writeFunctionSpace_).
-  {
-    readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, atlas_conf));
-  }
+  // Create a generic interpolator for converting to the structured grid
+  // -------------------------------------------------------------------
+  interpolator_.reset(new oops::GlobalInterpolator(params.toConfiguration(), geomData,
+                                                   *writeFunctionSpace_,
+                                                   geom.getComm()));
 
-  // Read interpolator: balanced structured grid -> cube sphere
-  {
-    oops::GeometryData readGeomData(*readFunctionSpace_, atlas::FieldSet(),
-                                    geom.levelsAreTopDown(), geom.getComm());
-    readInterpolator_.reset(new oops::GlobalInterpolator(params.toConfiguration(), readGeomData,
-                                                         geom.functionSpace(),
-                                                         geom.getComm()));
-  }
+  // Create a balanced StructuredColumns function space for reading
+  // (balanced distribution so every rank owns points, required for GeometryData triangulation)
+  // ------------------------------------------------------------------------------------------
+  readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, atlas_conf));
 
+  // Build GeometryData from the balanced StructuredColumns (source for read interpolation)
+  // ---------------------------------------------------------------------------------------
+  oops::GeometryData readGeomData(*readFunctionSpace_, atlas::FieldSet(),
+                                  geom.levelsAreTopDown(), geom.getComm());
+
+  // Create interpolator for reading: balanced structured grid → cube sphere NodeColumns
+  // ------------------------------------------------------------------------------------
+  readInterpolator_.reset(new oops::GlobalInterpolator(params.toConfiguration(), readGeomData,
+                                                       geom.functionSpace(),
+                                                       geom.getComm()));
   oops::Log::trace() << classname() << " constructor done" << std::endl;
 }
-
 // -------------------------------------------------------------------------------------------------
-
 IOStructuredGrid::~IOStructuredGrid() {
   util::Timer timer(classname(), "~IOStructuredGrid");
   oops::Log::trace() << classname() << " destructor starting" << std::endl;
@@ -111,35 +115,21 @@ IOStructuredGrid::~IOStructuredGrid() {
 // -------------------------------------------------------------------------------------------------
 
 void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileionames,
-                            const eckit::LocalConfiguration & fileioscaling) const {
+                                const eckit::LocalConfiguration & fileioscaling) const {
   util::Timer timer(classname(), "read state");
   oops::Log::trace() << classname() << " read state starting" << std::endl;
   this->readAndInterp(x, "state", fileionames, fileioscaling);
   oops::Log::trace() << classname() << " read state done" << std::endl;
-}
+  }
 
 // -------------------------------------------------------------------------------------------------
 
 void IOStructuredGrid::read(Increment & dx, const eckit::LocalConfiguration & fileionames,
-                             const eckit::LocalConfiguration & fileioscaling) const {
+                                const eckit::LocalConfiguration & fileioscaling) const {
   util::Timer timer(classname(), "read increment");
   oops::Log::trace() << classname() << " read increment starting" << std::endl;
   this->readAndInterp(dx, "increment", fileionames, fileioscaling);
   oops::Log::trace() << classname() << " read increment done" << std::endl;
-}
-
-// -------------------------------------------------------------------------------------------------
-
-void IOStructuredGrid::write(const State & x, const eckit::LocalConfiguration & fileionames,
-                              const eckit::LocalConfiguration & fileioscaling) const {
-  this->interpAndWrite(x, "state", fileionames, fileioscaling);
-}
-
-// -------------------------------------------------------------------------------------------------
-
-void IOStructuredGrid::write(const Increment & dx, const eckit::LocalConfiguration & fileionames,
-                              const eckit::LocalConfiguration & fileioscaling) const {
-  this->interpAndWrite(dx, "increment", fileionames, fileioscaling);
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -151,13 +141,15 @@ void IOStructuredGrid::interpAndWrite(const T & obj, const std::string & label,
   util::Timer timer(classname(), "write " + label);
   oops::Log::trace() << classname() << " write " << label << " starting" << std::endl;
 
-  // Get cube sphere fields and interpolate to serial structured grid
+  // Create field sets
   atlas::FieldSet fieldsCubeSphere;
   atlas::FieldSet fieldsGeographic;
   obj.toFieldSet(fieldsCubeSphere);
-  writeInterpolator_->apply(fieldsCubeSphere, fieldsGeographic);
 
-  // Only rank 0 holds all structured grid data (serial distribution) - write to file
+  // Apply interpolation
+  interpolator_->apply(fieldsCubeSphere, fieldsGeographic);
+
+  // Write to disk if rank 0
   if (geom_.getComm().rank() == 0) {
     this->writeStructuredFields(fieldsGeographic, obj.validTime(), fileionames, fileioscaling);
   }
@@ -167,41 +159,22 @@ void IOStructuredGrid::interpAndWrite(const T & obj, const std::string & label,
 
 // -------------------------------------------------------------------------------------------------
 
-template <typename T>
-void IOStructuredGrid::readAndInterp(T & obj, const std::string & label,
-                                     const eckit::LocalConfiguration & fileionames,
-                                     const eckit::LocalConfiguration & fileioscaling) const {
-  util::Timer timer(classname(), "read " + label);
-  oops::Log::trace() << classname() << " read " << label << " starting" << std::endl;
+void IOStructuredGrid::write(const State & x, const eckit::LocalConfiguration & fileionames,
+                                const eckit::LocalConfiguration & fileioscaling) const {
+  this->interpAndWrite(x, "state", fileionames, fileioscaling);
+}
 
-  // Get cube sphere fields structure (provides field names and level counts)
-  atlas::FieldSet fieldsCubeSphere;
-  obj.toFieldSet(fieldsCubeSphere);
+// -------------------------------------------------------------------------------------------------
 
-  // Build a structured grid FieldSet on the balanced readFunctionSpace_
-  // with the same fields as the cube sphere
-  atlas::FieldSet fieldsGeographic;
-  for (const auto & cubeField : fieldsCubeSphere) {
-    fieldsGeographic.add(readFunctionSpace_->createField<double>(
-        atlas::option::name(cubeField.name()) |
-        atlas::option::levels(cubeField.shape(1))));
-  }
-
-  // Read structured grid data from NetCDF; each rank reads its local rows
-  this->readStructuredFields(obj.validTime(), fieldsGeographic, fileionames);
-
-  // Interpolate from balanced structured grid to distributed cube sphere
-  readInterpolator_->apply(fieldsGeographic, fieldsCubeSphere);
-
-  // Update the state/increment from the cube sphere fields
-  obj.fromFieldSet(fieldsCubeSphere);
-
-  oops::Log::trace() << classname() << " read " << label << " done" << std::endl;
+void IOStructuredGrid::write(const Increment & dx, const eckit::LocalConfiguration & fileionames,
+                             const eckit::LocalConfiguration & fileioscaling) const {
+  this->interpAndWrite(dx, "increment", fileionames, fileioscaling);
 }
 
 // -------------------------------------------------------------------------------------------------
 
 static inline void nc_rc(const int return_code, const std::string & operation) {
+  // If there was a failure of the netCDF operation, abort with the error message
   if (return_code) {
     ABORT("IOStructuredGrid netCDF operation \'" + operation + "\' failed with error: "
           + nc_strerror(return_code));
@@ -214,35 +187,59 @@ void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
                                              const util::DateTime & time,
                                              const eckit::LocalConfiguration & ioNames,
                                              const eckit::LocalConfiguration & ioScaling) const {
+  // NetCDF IDs
+  // ----------
   int fileId;
-  int latId, lonId, levId, edgId, forId, timId;
+
+  // Dimension indices
+  int latId;
+  int lonId;
+  int levId;
+  int edgId;
+  int forId;
+  int timId;
+
+  // Variable indices
   int fIv;
   std::map<std::string, int> fieldIvs;
 
-  // Get ak/bk for writing as global attributes
+  // Get ak/bk for writing
+  // ---------------------
   std::vector<double> ak = geom_.ak();
   std::vector<double> bk = geom_.bk();
 
-  // Format the filename with datetime
+  // Get the name of the file and adjust with datetime
+  // -------------------------------------------------
   std::string pathFile = params_.filename.value();
+
+  // For backward compatibility add some things to the filename if not already present
   if (pathFile.find("%Y") == std::string::npos) {
     pathFile += "%Y%m%d_%H%M%Sz";
   }
   if (pathFile.find(".nc") == std::string::npos) {
     pathFile += ".nc4";
   }
+
+  // Format the datetime string
   pathFile = time.formatString(pathFile);
+
+  // Replace member number (ensemble applciaitons)
   util::stringfunctions::swapNameMember(params_.toConfiguration(), pathFile);
 
-  // Create file
-  nc_rc(nc_create(pathFile.c_str(), NC_CLOBBER | NC_NETCDF4, &fileId), "nc_create " + pathFile);
+  // Create a file to write fields into
+  // ----------------------------------
+  nc_rc(nc_create(pathFile.c_str(), NC_CLOBBER | NC_NETCDF4, &fileId), "nc_create" + pathFile);
 
-  // Grid dimensions
+  // Create regular grid for determining lat/lon values
+  // --------------------------------------------------
   const atlas::RegularGrid regGrid(writeFunctionSpace_->grid());
+
+  // Define the dimensions in the file
+  // ---------------------------------
   const int nLat = regGrid.ny();
   const int nLon = regGrid.nx();
   const int nLev = geom_.npz();
-  const int nEdg = nLev + 1;
+  const int nEdg = geom_.npz() + 1;
   const int nFor = 4;
   const int nTim = 1;
 
@@ -253,17 +250,36 @@ void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
   nc_rc(nc_def_dim(fileId, params_.forName.value().c_str(), nFor, &forId), "nc_def_dim (for)");
   nc_rc(nc_def_dim(fileId, params_.timName.value().c_str(), nTim, &timId), "nc_def_dim (tim)");
 
-  // Coordinate arrays (lat stored south-to-north, matching global convention)
-  std::vector<double> latArr(nLat), lonArr(nLon);
-  std::vector<int> levArr(nLev), edgArr(nEdg), forArr(nFor), timArr(nTim);
-  for (int i = 0; i < nLat; ++i) { latArr[i] = regGrid.y(nLat - 1 - i); }
-  for (int i = 0; i < nLon; ++i) { lonArr[i] = regGrid.x(i); }
-  for (int i = 0; i < nLev; ++i) { levArr[i] = i + 1; }
-  for (int i = 0; i < nEdg; ++i) { edgArr[i] = i + 1; }
-  for (int i = 0; i < nFor; ++i) { forArr[i] = i + 1; }
-  for (int i = 0; i < nTim; ++i) { timArr[i] = i + 1; }
+  // Define the dimensions variables in the file
+  // -------------------------------------------
+  std::vector<double> latArr(nLat);
+  std::vector<double> lonArr(nLon);
+  std::vector<int> levArr(nLev);
+  std::vector<int> edgArr(nEdg);
+  std::vector<int> forArr(nFor);
+  std::vector<int> timArr(nTim);
 
-  // Define coordinate variables
+  for (int i = 0; i < nLat; ++i) {
+    latArr[i] = regGrid.y(nLat - 1 - i);
+  }
+  for (int i = 0; i < nLon; ++i) {
+    lonArr[i] = regGrid.x(i);
+  }
+  for (int i = 0; i < nLev; ++i) {
+    levArr[i] = i + 1;
+  }
+  for (int i = 0; i < nEdg; ++i) {
+    edgArr[i] = i + 1;
+  }
+  for (int i = 0; i < nFor; ++i) {
+    forArr[i] = i + 1;
+  }
+  for (int i = 0; i < nTim; ++i) {
+    timArr[i] = i + 1;
+  }
+
+  // Write the dimension variables (and attributes) to the file
+  // ----------------------------------------------------------
   nc_rc(nc_def_var(fileId, params_.latName.value().c_str(), NC_DOUBLE, 1, &latId, &fIv),
         "nc_def_var (lat)");
   nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("degrees_north"), "degrees_north"),
@@ -278,38 +294,49 @@ void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
 
   nc_rc(nc_def_var(fileId, params_.levName.value().c_str(), NC_INT, 1, &levId, &fIv),
         "nc_def_var (lev)");
-  nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("1"), "1"), "nc_put_att_text (lev)");
+  nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("1"), "1"),
+        "nc_put_att_text (lev)");
   fieldIvs[params_.levName.value()] = fIv;
 
   nc_rc(nc_def_var(fileId, params_.edgName.value().c_str(), NC_INT, 1, &edgId, &fIv),
         "nc_def_var (edg)");
-  nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("1"), "1"), "nc_put_att_text (edg)");
+  nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("1"), "1"),
+        "nc_put_att_text (edg)");
   fieldIvs[params_.edgName.value()] = fIv;
 
   nc_rc(nc_def_var(fileId, params_.forName.value().c_str(), NC_INT, 1, &forId, &fIv),
         "nc_def_var (for)");
-  nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("1"), "1"), "nc_put_att_text (for)");
+  nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("1"), "1"),
+        "nc_put_att_text (for)");
   fieldIvs[params_.forName.value()] = fIv;
 
   nc_rc(nc_def_var(fileId, params_.timName.value().c_str(), NC_INT, 1, &timId, &fIv),
         "nc_def_var (tim)");
-  nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("1"), "1"), "nc_put_att_text (tim)");
+  nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("1"), "1"),
+        "nc_put_att_text (tim)");
   fieldIvs[params_.timName.value()] = fIv;
 
-  // Dimension sets per level count
+  // Define some categories of dimension IDs for fields
+  // --------------------------------------------------
   std::map<int, std::vector<int>> fieldDims;
-  fieldDims[nLev] = {timId, levId, latId, lonId};
-  fieldDims[nEdg] = {timId, edgId, latId, lonId};
-  fieldDims[4]    = {timId, forId, latId, lonId};
-  fieldDims[1]    = {timId, latId, lonId};
-  fieldDims[0]    = {timId, latId, lonId};
+  fieldDims[nLev] = {timId, levId, latId, lonId};  // Fields at levels
+  fieldDims[nEdg] = {timId, edgId, latId, lonId};  // Fields at edges
+  fieldDims[4] = {timId, forId, latId, lonId};     // Fields at four levels
+  fieldDims[1] = {timId, latId, lonId};            // Fields at surface
+  fieldDims[0] = {timId, latId, lonId};            // Fields at surface
 
+  // Set float precision for fields
+  // ------------------------------
   const int floatPrecision = params_.floatPrecision.value();
   const int ncPrec = (floatPrecision == 4) ? NC_FLOAT : NC_DOUBLE;
 
-  // Define field variables
-  for (auto & field : fields) {
+  // Define all the fields that will be written
+  // ------------------------------------------
+  for (auto& field : fields) {
+    // Get number of levels for this field
     const int nLevField = field.shape(1);
+
+    // Get dimensions for this field from map
     auto it = fieldDims.find(nLevField);
     if (it == fieldDims.end()) {
       std::ostringstream oss;
@@ -318,43 +345,53 @@ void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
           << "' with " << nLevField << " levels.";
       ABORT(oss.str());
     }
-    const auto & dims = it->second;
+    const auto &dims = it->second;
+
+    // Look for fieldname in the iofile configuration and use the value if key found
     const std::string fieldLong = field.name();
+    const char * fieldLongC = fieldLong.c_str();
+
+    // Get the fieldmetadata for this field
     const FieldMetadata & fieldMetadata = geom_.fieldsMetaData().getFieldMetadata(fieldLong);
     std::string unitsStr = fieldMetadata.getVarUnits();
+    const char * units = unitsStr.c_str();
 
-    // Allow ioNames to remap the field variable name in the file
     std::string fieldName = fieldLong;
-    if (ioNames.has(fieldLong)) {
+    if (ioNames.has(fieldName)) {
       fieldName = ioNames.getString(fieldLong);
     }
 
+    // Define the field in the file
     nc_rc(nc_def_var(fileId, fieldName.c_str(), ncPrec, dims.size(), dims.data(), &fIv),
           "nc_def_var " + fieldName);
-    nc_rc(nc_put_att_text(fileId, fIv, "units", strlen(unitsStr.c_str()), unitsStr.c_str()),
+    nc_rc(nc_put_att_text(fileId, fIv, "units", strlen(units), units),
           "nc_put_att_text " + fieldName + " units");
-    nc_rc(nc_put_att_text(fileId, fIv, "long_name", strlen(fieldLong.c_str()), fieldLong.c_str()),
+    nc_rc(nc_put_att_text(fileId, fIv, "long_name", strlen(fieldLongC), fieldLongC),
           "nc_put_att_text " + fieldName + " long_name");
+
+    // Insert field into the fieldIvs map
     fieldIvs[field.name()] = fIv;
   }
 
-  // Global attributes: ak/bk (hybrid pressure coords), grid type, dimensions
-  if (!ak.empty()) {
-    nc_rc(nc_put_att_double(fileId, NC_GLOBAL, "ak", NC_DOUBLE, ak.size(), ak.data()),
+  // Write ak/bk to the file as global attributes
+  // --------------------------------------------
+  nc_rc(nc_put_att_double(fileId, NC_GLOBAL, "ak", NC_DOUBLE, ak.size(), ak.data()),
           "nc_put_att_double (ak)");
-  }
-  if (!bk.empty()) {
-    nc_rc(nc_put_att_double(fileId, NC_GLOBAL, "bk", NC_DOUBLE, bk.size(), bk.data()),
+  nc_rc(nc_put_att_double(fileId, NC_GLOBAL, "bk", NC_DOUBLE, bk.size(), bk.data()),
           "nc_put_att_double (bk)");
-  }
   nc_rc(nc_put_att_text(fileId, NC_GLOBAL, "grid", strlen(gridStr_.c_str()), gridStr_.c_str()),
-        "nc_put_att_text (grid)");
-  nc_rc(nc_put_att_int(fileId, NC_GLOBAL, "im", NC_INT, 1, &nLon), "nc_put_att_int (im)");
-  nc_rc(nc_put_att_int(fileId, NC_GLOBAL, "jm", NC_INT, 1, &nLat), "nc_put_att_int (jm)");
+          "nc_put_att_text (grid)");
+  nc_rc(nc_put_att_int(fileId, NC_GLOBAL, "im", NC_INT, 1, &nLon),
+          "nc_put_att_int (im)");
+  nc_rc(nc_put_att_int(fileId, NC_GLOBAL, "jm", NC_INT, 1, &nLat),
+          "nc_put_att_int (im)");
 
+  // End definition mode
+  // -------------------
   nc_rc(nc_enddef(fileId), "nc_enddef");
 
-  // Write coordinate data
+  // Write coordinate data into the file
+  // -----------------------------------
   nc_rc(nc_put_var_double(fileId, fieldIvs[params_.latName.value()], latArr.data()),
         "nc_put_var_double (lat)");
   nc_rc(nc_put_var_double(fileId, fieldIvs[params_.lonName.value()], lonArr.data()),
@@ -366,27 +403,68 @@ void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
   nc_rc(nc_put_var_int(fileId, fieldIvs[params_.timName.value()], timArr.data()),
         "nc_put_var_int (tim)");
 
-  // Write field data
-  // Atlas StructuredColumns (serial): point index = j_atlas * nLon + i
-  // where j_atlas=0 is northernmost.  File stores lat south-to-north:
-  //   file j_nc = nLat-1-j_atlas  =>  j_atlas = nLat-1-j_nc
-  // So values[k*nLat*nLon + j_nc*nLon + i] = fieldView[(nLat-1-j_nc)*nLon + i, k]
-  for (auto & field : fields) {
+  // Write the fields into the file
+  // ------------------------------
+  for (auto& field : fields) {
+    // Get number of levels for this field
     const int nLevField = field.shape(1);
+
+    // Create a rank 2 view of the field
     const auto fieldView = atlas::array::make_view<double, 2>(field);
-    std::vector<double> values(nLat * nLon * nLevField);
-    for (int k = 0; k < nLevField; ++k) {
-      for (int j = 0; j < nLat; ++j) {
-        for (int i = 0; i < nLon; ++i) {
+
+    // Vector to hold the packed field
+    std::vector<double> values(nLat*nLon*nLevField);
+
+    // Loop over dimensions and pack the field
+    for (size_t k = 0; k < nLevField; ++k) {
+      for (size_t j = 0; j < nLat; ++j) {
+        for (size_t i = 0; i < nLon; ++i) {
           values[k*nLat*nLon + j*nLon + i] = fieldView((nLat - 1 - j) * nLon + i, k);
         }
       }
     }
+
+    // Write the field to the file
     nc_rc(nc_put_var_double(fileId, fieldIvs[field.name()], values.data()),
           "nc_put_var_double " + field.name());
   }
 
+  // Close netCDF file
+  // -----------------
   nc_rc(nc_close(fileId), "nc_close");
+}
+
+// -------------------------------------------------------------------------------------------------
+
+template <typename T>
+void IOStructuredGrid::readAndInterp(T & obj, const std::string & label,
+                                     const eckit::LocalConfiguration & fileionames,
+                                     const eckit::LocalConfiguration & fileioscaling) const {
+  util::Timer timer(classname(), "read " + label);
+  oops::Log::trace() << classname() << " read " << label << " starting" << std::endl;
+
+  // Get the cube sphere fields (determines names and level counts to request)
+  atlas::FieldSet fieldsCubeSphere;
+  obj.toFieldSet(fieldsCubeSphere);
+
+  // Create corresponding fields on the balanced structured grid
+  atlas::FieldSet fieldsGeographic;
+  for (const auto & field : fieldsCubeSphere) {
+    atlas::Field geoField = readFunctionSpace_->createField(
+        atlas::option::name(field.name()) | atlas::option::levels(field.shape(1)));
+    fieldsGeographic.add(geoField);
+  }
+
+  // Each rank reads its own latitude rows from the NetCDF file
+  this->readStructuredFields(obj.validTime(), fieldsGeographic, fileionames);
+
+  // Interpolate from the balanced structured grid to the cube sphere
+  readInterpolator_->apply(fieldsGeographic, fieldsCubeSphere);
+
+  // Update the State/Increment from the interpolated cube sphere fields
+  obj.fromFieldSet(fieldsCubeSphere);
+
+  oops::Log::trace() << classname() << " read " << label << " done" << std::endl;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -394,7 +472,7 @@ void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
 void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
                                             atlas::FieldSet & fields,
                                             const eckit::LocalConfiguration & ioNames) const {
-  // Format the filename with datetime (same logic as write)
+  // Build the filename (same logic as writeStructuredFields)
   std::string pathFile = params_.filename.value();
   if (pathFile.find("%Y") == std::string::npos) {
     pathFile += "%Y%m%d_%H%M%Sz";
@@ -405,7 +483,7 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
   pathFile = time.formatString(pathFile);
   util::stringfunctions::swapNameMember(params_.toConfiguration(), pathFile);
 
-  // Open for reading (all ranks open in parallel; NC_NOWRITE allows concurrent reads)
+  // Open the file for reading (NC_NOWRITE allows concurrent reads from all ranks)
   int fileId;
   nc_rc(nc_open(pathFile.c_str(), NC_NOWRITE, &fileId), "nc_open " + pathFile);
 
@@ -419,20 +497,19 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
   nc_rc(nc_inq_dimlen(fileId, latDimId, &nLat), "nc_inq_dimlen (lat)");
   nc_rc(nc_inq_dimlen(fileId, lonDimId, &nLon), "nc_inq_dimlen (lon)");
 
-  // Coordinate index convention used throughout this method:
+  // Coordinate index convention:
   //
-  //   Atlas StructuredColumns j index: j=0 is NORTHERNMOST latitude.
-  //   NetCDF file j index (nc_j):       nc_j=0 is SOUTHERNMOST latitude (south-to-north storage).
-  //   Relationship:  nc_j = nLat - 1 - j_atlas  <=>  j_atlas = nLat - 1 - nc_j
+  //   Atlas StructuredColumns j:  j=0 is NORTHERNMOST latitude.
+  //   NetCDF file j (nc_j):       nc_j=0 is SOUTHERNMOST latitude (south-to-north storage,
+  //                               matching the write convention in writeStructuredFields).
+  //   Relationship:  nc_j = nLat - 1 - j_atlas
   //
-  // This rank owns Atlas rows [j_beg, j_end).  The corresponding contiguous NetCDF row block is
-  //   nc_j in [nLat - j_end,  nLat - 1 - j_beg]
-  // which starts at nc_j_start = nLat - j_end.
+  // This rank owns Atlas rows [j_beg, j_end).  The matching NetCDF row block is
+  //   nc_j in [nLat - j_end,  nLat - 1 - j_beg],  starting at nc_j_start = nLat - j_end.
   //
-  // The read buffer for a multi-level field is ordered (lev, nc_j_local, lon) where
-  // nc_j_local = 0 corresponds to nc_j = nc_j_start (southernmost row in this rank's block),
-  // i.e., nc_j_local = nc_j - nc_j_start = (nLat - 1 - j_atlas) - (nLat - j_end)
-  //                  = j_end - 1 - j_atlas.
+  // Within the read buffer (size myNLat × nLon per level), local index nc_j_local = 0
+  // corresponds to nc_j = nc_j_start (southernmost row of this rank's block), so:
+  //   nc_j_local = (nLat - 1 - j_atlas) - (nLat - j_end) = j_end - 1 - j_atlas.
   const int j_beg = readFunctionSpace_->j_begin();
   const int j_end = readFunctionSpace_->j_end();
   const int myNLat = j_end - j_beg;
@@ -442,13 +519,12 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
     const std::string fieldLong = field.name();
     const int nLevField = field.shape(1);
 
-    // Allow ioNames to remap the field variable name in the file (symmetrical with write).
+    // Respect ioNames remapping (symmetrical with writeStructuredFields)
     std::string fieldName = fieldLong;
     if (ioNames.has(fieldLong)) {
       fieldName = ioNames.getString(fieldLong);
     }
 
-    // Look up the variable in the file
     int varId;
     const int rc = nc_inq_varid(fileId, fieldName.c_str(), &varId);
     if (rc != NC_NOERR) {
@@ -458,31 +534,29 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
       continue;
     }
 
-    // Read only this rank's rows.
-    // File variable dims:
-    //   surface (nLevField==1): (time, lat, lon)        -- 3-D variable
-    //   multi-level           : (time, lev/edge/four, lat, lon)  -- 4-D variable
+    // Read this rank's rows from the file.
+    // Variable dims:  surface (nLevField==1): (time, lat, lon)
+    //                 multi-level           : (time, lev/edge/four, lat, lon)
     std::vector<double> values;
     if (nLevField == 1) {
-      // 3D variable: (time=1, lat=nLat, lon=nLon)
       std::vector<size_t> start = {0, nc_j_start, 0};
       std::vector<size_t> count = {1, static_cast<size_t>(myNLat), nLon};
-      values.resize(myNLat * static_cast<int>(nLon));
+      values.resize(static_cast<size_t>(myNLat) * nLon);
       nc_rc(nc_get_vara_double(fileId, varId, start.data(), count.data(), values.data()),
             "nc_get_vara_double " + fieldName);
     } else {
-      // 4D variable: (time=1, lev=nLevField, lat=nLat, lon=nLon)
       std::vector<size_t> start = {0, 0, nc_j_start, 0};
       std::vector<size_t> count = {1, static_cast<size_t>(nLevField),
                                    static_cast<size_t>(myNLat), nLon};
-      values.resize(nLevField * myNLat * static_cast<int>(nLon));
+      values.resize(static_cast<size_t>(nLevField) *
+                    static_cast<size_t>(myNLat) * nLon);
       nc_rc(nc_get_vara_double(fileId, varId, start.data(), count.data(), values.data()),
             "nc_get_vara_double " + fieldName);
     }
 
-    // Fill the Atlas StructuredColumns field view using the index convention described above.
-    // Buffer index: values[k * myNLat * nLon + nc_j_local * nLon + i]
-    //   where nc_j_local = j_end - 1 - j_atlas  (see comment block above).
+    // Fill the Atlas StructuredColumns field view.
+    // Buffer: values[k * myNLat * nLon + nc_j_local * nLon + i]
+    //   where nc_j_local = j_end - 1 - j_atlas  (see coordinate convention above).
     auto fieldView = atlas::array::make_view<double, 2>(field);
     for (int j = j_beg; j < j_end; ++j) {
       const int nc_j_local = (j_end - 1) - j;
@@ -491,8 +565,9 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
         const atlas::idx_t localIdx = readFunctionSpace_->index(j, i);
         for (int k = 0; k < nLevField; ++k) {
           fieldView(localIdx, k) =
-              values[k * myNLat * static_cast<int>(nLon)
-                     + nc_j_local * static_cast<int>(nLon) + i];
+              values[static_cast<size_t>(k) * static_cast<size_t>(myNLat) * nLon
+                     + static_cast<size_t>(nc_j_local) * nLon
+                     + static_cast<size_t>(i)];
         }
       }
     }
