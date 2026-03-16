@@ -576,39 +576,56 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
       // Read this rank's rows from the file.
       // Variable dims:  surface (nLevField==1): (time, lat, lon)
       //                 multi-level           : (time, lev/edge/four, lat, lon)
-      std::vector<double> values;
+      // Use a float buffer: UFS/GFS input files store float32 data.  nc_get_vara_float
+      // also handles double-precision NetCDF variables via narrowing conversion (acceptable
+      // for NWP initial conditions where float32 precision suffices).
+      std::vector<float> values;
       if (nLevField == 1) {
         std::vector<size_t> start = {0, nc_j_start, 0};
         std::vector<size_t> count = {1, static_cast<size_t>(myNLat), nLon};
         values.resize(static_cast<size_t>(myNLat) * nLon);
-        nc_rc(nc_get_vara_double(fileId, varId, start.data(), count.data(), values.data()),
-              "nc_get_vara_double " + fieldName);
+        nc_rc(nc_get_vara_float(fileId, varId, start.data(), count.data(), values.data()),
+              "nc_get_vara_float " + fieldName);
       } else {
         std::vector<size_t> start = {0, 0, nc_j_start, 0};
         std::vector<size_t> count = {1, static_cast<size_t>(nLevField),
                                      static_cast<size_t>(myNLat), nLon};
         values.resize(static_cast<size_t>(nLevField) *
                       static_cast<size_t>(myNLat) * nLon);
-        nc_rc(nc_get_vara_double(fileId, varId, start.data(), count.data(), values.data()),
-              "nc_get_vara_double " + fieldName);
+        nc_rc(nc_get_vara_float(fileId, varId, start.data(), count.data(), values.data()),
+              "nc_get_vara_float " + fieldName);
       }
 
       // Fill the Atlas StructuredColumns field view.
       // Buffer: values[k * myNLat * nLon + nc_j_local * nLon + i]
       //   where nc_j_local = j_end - 1 - j_atlas  (see coordinate convention above).
-      auto fieldView = atlas::array::make_view<double, 2>(field);
-      for (int j = j_beg; j < j_end; ++j) {
-        const int nc_j_local = (j_end - 1) - j;
-        for (atlas::idx_t i = readFunctionSpace_->i_begin(j);
-             i < readFunctionSpace_->i_end(j); ++i) {
-          const atlas::idx_t localIdx = readFunctionSpace_->index(j, i);
-          for (int k = 0; k < nLevField; ++k) {
-            fieldView(localIdx, k) =
-                values[static_cast<size_t>(k) * static_cast<size_t>(myNLat) * nLon
-                       + static_cast<size_t>(nc_j_local) * nLon
-                       + static_cast<size_t>(i)];
+      // Dispatch on the Atlas field's datatype (float32 or float64) using a lambda to
+      // avoid duplicating the fill loop.
+      auto fillFieldView = [&](auto & fv) {
+        using ValueType = std::remove_reference_t<decltype(fv(0, 0))>;
+        for (int j = j_beg; j < j_end; ++j) {
+          const int nc_j_local = (j_end - 1) - j;
+          for (atlas::idx_t i = readFunctionSpace_->i_begin(j);
+               i < readFunctionSpace_->i_end(j); ++i) {
+            const atlas::idx_t localIdx = readFunctionSpace_->index(j, i);
+            for (int k = 0; k < nLevField; ++k) {
+              fv(localIdx, k) = static_cast<ValueType>(
+                  values[static_cast<size_t>(k) * static_cast<size_t>(myNLat) * nLon
+                         + static_cast<size_t>(nc_j_local) * nLon
+                         + static_cast<size_t>(i)]);
+            }
           }
         }
+      };
+      if (field.datatype() == atlas::array::DataType::real64()) {
+        auto fieldView = atlas::array::make_view<double, 2>(field);
+        fillFieldView(fieldView);
+      } else if (field.datatype() == atlas::array::DataType::real32()) {
+        auto fieldView = atlas::array::make_view<float, 2>(field);
+        fillFieldView(fieldView);
+      } else {
+        ABORT("IOStructuredGrid::readStructuredFields: unsupported Atlas field datatype for '"
+              + fieldName + "': " + field.datatype().str());
       }
       field.set_dirty();
       fieldsRead.insert(field.name());
