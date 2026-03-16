@@ -508,6 +508,9 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
   const int j_end = readFunctionSpace_->j_end();
   const int myNLat = j_end - j_beg;
 
+  oops::Log::trace() << classname() << " j_beg=" << j_beg << " j_end=" << j_end << std::endl;
+  oops::Log::trace() << classname() << " myNLat=" << myNLat << std::endl;
+
   // Expected grid dimensions (set from the first file; subsequent files must match).
   size_t nLatExpected = 0;
   size_t nLonExpected = 0;
@@ -516,6 +519,8 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
     // Open this file; all ranks open concurrently (NC_NOWRITE)
     int fileId;
     nc_rc(nc_open(pathFile.c_str(), NC_NOWRITE, &fileId), "nc_open " + pathFile);
+
+    oops::Log::trace() << classname() << " opened pathFile=" << pathFile << std::endl;
 
     // Read grid dimensions from the file
     int latDimId, lonDimId;
@@ -526,6 +531,8 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
           "nc_inq_dimid (lon)");
     nc_rc(nc_inq_dimlen(fileId, latDimId, &nLat), "nc_inq_dimlen (lat)");
     nc_rc(nc_inq_dimlen(fileId, lonDimId, &nLon), "nc_inq_dimlen (lon)");
+
+    oops::Log::trace() << classname() << " nLat=" << nLat << " nLon=" << nLon << std::endl;
 
     // Validate grid dimensions are consistent across all input files.
     if (nLatExpected == 0) {
@@ -613,6 +620,9 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
         nc_rc(nc_get_vara_float(fileId, varId, start.data(), count.data(), values.data()),
               "nc_get_vara_float " + fieldName);
       }
+
+      oops::Log::trace() << classname() << " read " << values.size() << " floats for '"
+                         << fieldName << "' nc_j_start=" << nc_j_start << std::endl;
 
       oops::Log::trace() << classname() << " filling Atlas view for '" << fieldName
                          << "' datatype=" << field.datatype().str() << std::endl;
