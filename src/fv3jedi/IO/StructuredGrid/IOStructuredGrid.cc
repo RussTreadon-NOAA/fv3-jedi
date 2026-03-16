@@ -451,7 +451,8 @@ void IOStructuredGrid::readAndInterp(T & obj, const std::string & label,
   atlas::FieldSet fieldsGeographic;
   for (const auto & field : fieldsCubeSphere) {
     atlas::Field geoField = readFunctionSpace_->createField(
-        atlas::option::name(field.name()) | atlas::option::levels(field.shape(1)));
+        atlas::option::name(field.name()) | atlas::option::levels(field.shape(1)) |
+        atlas::option::datatype(field.datatype()));
     fieldsGeographic.add(geoField);
   }
 
