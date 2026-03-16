@@ -552,17 +552,22 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
     // Coordinate index convention:
     //
     //   Atlas StructuredColumns j:  j=0 is NORTHERNMOST latitude.
-    //   NetCDF file j (nc_j):       nc_j=0 is SOUTHERNMOST latitude (south-to-north storage,
-    //                               matching the write convention in writeStructuredFields).
-    //   Relationship:  nc_j = nLat - 1 - j_atlas
     //
-    // This rank owns Atlas rows [j_beg, j_end).  The matching NetCDF row block is
-    //   nc_j in [nLat - j_end,  nLat - 1 - j_beg],  starting at nc_j_start = nLat - j_end.
+    //   North-to-south file (readLatSouthToNorth == false, DEFAULT for UFS/GFS):
+    //     nc_j=0 is NORTHERNMOST.  nc_j == j_atlas.
+    //     nc_j_start = j_beg;  nc_j_local = j_atlas - j_beg.
     //
-    // Within the read buffer (size myNLat × nLon per level), local index nc_j_local = 0
-    // corresponds to nc_j = nc_j_start (southernmost row of this rank's block), so:
-    //   nc_j_local = (nLat - 1 - j_atlas) - (nLat - j_end) = j_end - 1 - j_atlas.
-    const size_t nc_j_start = static_cast<size_t>(nLat) - static_cast<size_t>(j_end);
+    //   South-to-north file (readLatSouthToNorth == true, matches writeStructuredFields output):
+    //     nc_j=0 is SOUTHERNMOST.  nc_j = nLat - 1 - j_atlas.
+    //     nc_j_start = nLat - j_end;  nc_j_local = j_end - 1 - j_atlas.
+    //
+    // In both cases nc_j_local ranges [0, myNLat) so the values buffer is indexed correctly.
+    const bool latSouthToNorth = params_.readLatSouthToNorth.value();
+    const size_t nc_j_start = latSouthToNorth
+        ? static_cast<size_t>(nLat) - static_cast<size_t>(j_end)
+        : static_cast<size_t>(j_beg);
+    oops::Log::trace() << classname() << " latSouthToNorth=" << latSouthToNorth
+                       << " nc_j_start=" << nc_j_start << std::endl;
 
     for (auto & field : fields) {
       // Skip fields already found in an earlier file (first-file-wins).
@@ -637,14 +642,15 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
 
       // Fill the Atlas StructuredColumns field view.
       // Buffer: values[k * myNLat * nLon + nc_j_local * nLon + i]
-      //   where nc_j_local = j_end - 1 - j_atlas  (see coordinate convention above).
+      //   nc_j_local:  north-to-south file → j - j_beg
+      //                south-to-north file → j_end - 1 - j
       // Dispatch on the Atlas field's datatype (float32 or float64) using a lambda to
       // avoid duplicating the fill loop.
       const std::string dtypeStr = field.datatype().str();
       auto fillFieldView = [&](auto & fv) {
         using ValueType = std::remove_reference_t<decltype(fv(0, 0))>;
         for (int j = j_beg; j < j_end; ++j) {
-          const int nc_j_local = (j_end - 1) - j;
+          const int nc_j_local = latSouthToNorth ? (j_end - 1) - j : j - j_beg;
           for (atlas::idx_t i = readFunctionSpace_->i_begin(j);
                i < readFunctionSpace_->i_end(j); ++i) {
             const atlas::idx_t localIdx = readFunctionSpace_->index(j, i);

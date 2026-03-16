@@ -67,6 +67,16 @@ class IOStructuredGridParameters : public IOParametersBase {
                                            "grid_yt", this};
   oops::Parameter<std::string> readLonName{"read longitude dim name", "read longitude dim name",
                                            "grid_xt", this};
+
+  // Latitude storage order in the input files.
+  // false (default): latitudes stored north-to-south (nc_j=0 is northernmost), matching
+  //                  UFS/GFS model output where grid_yt[0] ≈ +89°.
+  // true:            latitudes stored south-to-north (nc_j=0 is southernmost), matching
+  //                  files written by IOStructuredGrid::writeStructuredFields.
+  oops::Parameter<bool> readLatSouthToNorth{"read lat south to north",
+                                            "Whether input files store latitudes south-to-north"
+                                            " (true) or north-to-south (false, UFS/GFS default)",
+                                            false, this};
 };
 
 // -------------------------------------------------------------------------------------------------
