@@ -54,13 +54,19 @@ class IOStructuredGridParameters : public IOParametersBase {
   oops::Parameter<int> floatPrecision{"float precision in bytes", "float precision in bytes", 8,
                                       this};
 
-  // Dimension names
+  // Dimension names used when writing
   oops::Parameter<std::string> latName{"latitude dim name", "latitude dim name", "lat", this};
   oops::Parameter<std::string> lonName{"longitude dim name", "longitude dim name", "lon", this};
   oops::Parameter<std::string> levName{"level dim name", "level dim name", "lev", this};
   oops::Parameter<std::string> edgName{"edge dim name", "edge dim name", "edge", this};
   oops::Parameter<std::string> forName{"four level dim name", "four level dim name", "four", this};
   oops::Parameter<std::string> timName{"time dim name", "time dim name", "time", this};
+
+  // Dimension names used when reading (default to UFS/GFS model output conventions)
+  oops::Parameter<std::string> readLatName{"read latitude dim name", "read latitude dim name",
+                                           "grid_yt", this};
+  oops::Parameter<std::string> readLonName{"read longitude dim name", "read longitude dim name",
+                                           "grid_xt", this};
 };
 
 // -------------------------------------------------------------------------------------------------

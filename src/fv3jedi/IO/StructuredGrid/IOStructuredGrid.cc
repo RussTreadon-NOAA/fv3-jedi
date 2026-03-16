@@ -520,9 +520,9 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
     // Read grid dimensions from the file
     int latDimId, lonDimId;
     size_t nLat, nLon;
-    nc_rc(nc_inq_dimid(fileId, params_.latName.value().c_str(), &latDimId),
+    nc_rc(nc_inq_dimid(fileId, params_.readLatName.value().c_str(), &latDimId),
           "nc_inq_dimid (lat)");
-    nc_rc(nc_inq_dimid(fileId, params_.lonName.value().c_str(), &lonDimId),
+    nc_rc(nc_inq_dimid(fileId, params_.readLonName.value().c_str(), &lonDimId),
           "nc_inq_dimid (lon)");
     nc_rc(nc_inq_dimlen(fileId, latDimId, &nLat), "nc_inq_dimlen (lat)");
     nc_rc(nc_inq_dimlen(fileId, lonDimId, &nLon), "nc_inq_dimlen (lon)");
