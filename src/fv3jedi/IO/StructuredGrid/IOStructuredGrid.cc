@@ -8,6 +8,7 @@
 #include <netcdf.h>
 
 #include <map>
+#include <set>
 #include <vector>
 
 #include "atlas/functionspace.h"
@@ -475,109 +476,156 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
                                             const eckit::LocalConfiguration & ioNames) const {
   util::Timer timer(classname(), "readStructuredFields");
   oops::Log::trace() << classname() << " readStructuredFields starting" << std::endl;
-  // Build the filename (same logic as writeStructuredFields)
-  std::string pathFile = params_.filename.value();
-  if (pathFile.find("%Y") == std::string::npos) {
-    pathFile += "%Y%m%d_%H%M%Sz";
+
+  // Build the ordered list of files to search for fields.
+  // Priority: user-specified filenames list (+ datapath) > legacy single-filename fallback.
+  std::vector<std::string> pathFiles;
+  const std::vector<std::string> & fnList = params_.filenames.value();
+  if (!fnList.empty()) {
+    const std::string & dp = params_.datapath.value();
+    for (const auto & fn : fnList) {
+      pathFiles.push_back(dp.empty() ? fn : dp + "/" + fn);
+    }
+  } else {
+    // Fall back to single-file logic compatible with writeStructuredFields output
+    std::string pathFile = params_.filename.value();
+    if (pathFile.find("%Y") == std::string::npos) {
+      pathFile += "%Y%m%d_%H%M%Sz";
+    }
+    if (pathFile.find(".nc") == std::string::npos) {
+      pathFile += ".nc4";
+    }
+    pathFile = time.formatString(pathFile);
+    util::stringfunctions::swapNameMember(params_.toConfiguration(), pathFile);
+    pathFiles.push_back(pathFile);
   }
-  if (pathFile.find(".nc") == std::string::npos) {
-    pathFile += ".nc4";
-  }
-  pathFile = time.formatString(pathFile);
-  util::stringfunctions::swapNameMember(params_.toConfiguration(), pathFile);
 
-  // Open the file for reading (NC_NOWRITE allows concurrent reads from all ranks)
-  int fileId;
-  nc_rc(nc_open(pathFile.c_str(), NC_NOWRITE, &fileId), "nc_open " + pathFile);
+  // Track which fields have been populated across all files
+  std::set<std::string> fieldsRead;
 
-  // Read grid dimensions from the file
-  int latDimId, lonDimId;
-  size_t nLat, nLon;
-  nc_rc(nc_inq_dimid(fileId, params_.latName.value().c_str(), &latDimId),
-        "nc_inq_dimid (lat)");
-  nc_rc(nc_inq_dimid(fileId, params_.lonName.value().c_str(), &lonDimId),
-        "nc_inq_dimid (lon)");
-  nc_rc(nc_inq_dimlen(fileId, latDimId, &nLat), "nc_inq_dimlen (lat)");
-  nc_rc(nc_inq_dimlen(fileId, lonDimId, &nLon), "nc_inq_dimlen (lon)");
-
-  // Coordinate index convention:
-  //
-  //   Atlas StructuredColumns j:  j=0 is NORTHERNMOST latitude.
-  //   NetCDF file j (nc_j):       nc_j=0 is SOUTHERNMOST latitude (south-to-north storage,
-  //                               matching the write convention in writeStructuredFields).
-  //   Relationship:  nc_j = nLat - 1 - j_atlas
-  //
-  // This rank owns Atlas rows [j_beg, j_end).  The matching NetCDF row block is
-  //   nc_j in [nLat - j_end,  nLat - 1 - j_beg],  starting at nc_j_start = nLat - j_end.
-  //
-  // Within the read buffer (size myNLat × nLon per level), local index nc_j_local = 0
-  // corresponds to nc_j = nc_j_start (southernmost row of this rank's block), so:
-  //   nc_j_local = (nLat - 1 - j_atlas) - (nLat - j_end) = j_end - 1 - j_atlas.
+  // j_beg and j_end depend only on readFunctionSpace_; compute once outside the file loop.
   const int j_beg = readFunctionSpace_->j_begin();
   const int j_end = readFunctionSpace_->j_end();
   const int myNLat = j_end - j_beg;
-  const size_t nc_j_start = static_cast<size_t>(nLat) - static_cast<size_t>(j_end);
 
-  for (auto & field : fields) {
-    const std::string fieldLong = field.name();
-    const int nLevField = field.shape(1);
+  // Expected grid dimensions (set from the first file; subsequent files must match).
+  size_t nLatExpected = 0;
+  size_t nLonExpected = 0;
 
-    // Respect ioNames remapping (symmetrical with writeStructuredFields)
-    std::string fieldName = fieldLong;
-    if (ioNames.has(fieldLong)) {
-      fieldName = ioNames.getString(fieldLong);
+  for (const auto & pathFile : pathFiles) {
+    // Open this file; all ranks open concurrently (NC_NOWRITE)
+    int fileId;
+    nc_rc(nc_open(pathFile.c_str(), NC_NOWRITE, &fileId), "nc_open " + pathFile);
+
+    // Read grid dimensions from the file
+    int latDimId, lonDimId;
+    size_t nLat, nLon;
+    nc_rc(nc_inq_dimid(fileId, params_.latName.value().c_str(), &latDimId),
+          "nc_inq_dimid (lat)");
+    nc_rc(nc_inq_dimid(fileId, params_.lonName.value().c_str(), &lonDimId),
+          "nc_inq_dimid (lon)");
+    nc_rc(nc_inq_dimlen(fileId, latDimId, &nLat), "nc_inq_dimlen (lat)");
+    nc_rc(nc_inq_dimlen(fileId, lonDimId, &nLon), "nc_inq_dimlen (lon)");
+
+    // Validate grid dimensions are consistent across all input files.
+    if (nLatExpected == 0) {
+      nLatExpected = nLat;
+      nLonExpected = nLon;
+    } else if (nLat != nLatExpected || nLon != nLonExpected) {
+      ABORT("IOStructuredGrid::readStructuredFields: grid dimensions of '" + pathFile +
+            "' (" + std::to_string(nLat) + "x" + std::to_string(nLon) + ")"
+            + " do not match those of the first input file ("
+            + std::to_string(nLatExpected) + "x" + std::to_string(nLonExpected) + ")");
     }
 
-    int varId;
-    const int rc = nc_inq_varid(fileId, fieldName.c_str(), &varId);
-    if (rc != NC_NOERR) {
-      oops::Log::warning() << classname() << "::readStructuredFields: field '"
-                           << fieldName << "' not found in " << pathFile
-                           << " -- leaving at zero." << std::endl;
-      continue;
-    }
+    // Coordinate index convention:
+    //
+    //   Atlas StructuredColumns j:  j=0 is NORTHERNMOST latitude.
+    //   NetCDF file j (nc_j):       nc_j=0 is SOUTHERNMOST latitude (south-to-north storage,
+    //                               matching the write convention in writeStructuredFields).
+    //   Relationship:  nc_j = nLat - 1 - j_atlas
+    //
+    // This rank owns Atlas rows [j_beg, j_end).  The matching NetCDF row block is
+    //   nc_j in [nLat - j_end,  nLat - 1 - j_beg],  starting at nc_j_start = nLat - j_end.
+    //
+    // Within the read buffer (size myNLat × nLon per level), local index nc_j_local = 0
+    // corresponds to nc_j = nc_j_start (southernmost row of this rank's block), so:
+    //   nc_j_local = (nLat - 1 - j_atlas) - (nLat - j_end) = j_end - 1 - j_atlas.
+    const size_t nc_j_start = static_cast<size_t>(nLat) - static_cast<size_t>(j_end);
 
-    // Read this rank's rows from the file.
-    // Variable dims:  surface (nLevField==1): (time, lat, lon)
-    //                 multi-level           : (time, lev/edge/four, lat, lon)
-    std::vector<double> values;
-    if (nLevField == 1) {
-      std::vector<size_t> start = {0, nc_j_start, 0};
-      std::vector<size_t> count = {1, static_cast<size_t>(myNLat), nLon};
-      values.resize(static_cast<size_t>(myNLat) * nLon);
-      nc_rc(nc_get_vara_double(fileId, varId, start.data(), count.data(), values.data()),
-            "nc_get_vara_double " + fieldName);
-    } else {
-      std::vector<size_t> start = {0, 0, nc_j_start, 0};
-      std::vector<size_t> count = {1, static_cast<size_t>(nLevField),
-                                   static_cast<size_t>(myNLat), nLon};
-      values.resize(static_cast<size_t>(nLevField) *
-                    static_cast<size_t>(myNLat) * nLon);
-      nc_rc(nc_get_vara_double(fileId, varId, start.data(), count.data(), values.data()),
-            "nc_get_vara_double " + fieldName);
-    }
+    for (auto & field : fields) {
+      // Skip fields already read from an earlier file
+      if (fieldsRead.find(field.name()) != fieldsRead.end()) continue;
 
-    // Fill the Atlas StructuredColumns field view.
-    // Buffer: values[k * myNLat * nLon + nc_j_local * nLon + i]
-    //   where nc_j_local = j_end - 1 - j_atlas  (see coordinate convention above).
-    auto fieldView = atlas::array::make_view<double, 2>(field);
-    for (int j = j_beg; j < j_end; ++j) {
-      const int nc_j_local = (j_end - 1) - j;
-      for (atlas::idx_t i = readFunctionSpace_->i_begin(j);
-           i < readFunctionSpace_->i_end(j); ++i) {
-        const atlas::idx_t localIdx = readFunctionSpace_->index(j, i);
-        for (int k = 0; k < nLevField; ++k) {
-          fieldView(localIdx, k) =
-              values[static_cast<size_t>(k) * static_cast<size_t>(myNLat) * nLon
-                     + static_cast<size_t>(nc_j_local) * nLon
-                     + static_cast<size_t>(i)];
+      const std::string fieldLong = field.name();
+      const int nLevField = field.shape(1);
+
+      // Respect ioNames remapping (symmetrical with writeStructuredFields)
+      std::string fieldName = fieldLong;
+      if (ioNames.has(fieldLong)) {
+        fieldName = ioNames.getString(fieldLong);
+      }
+
+      int varId;
+      const int rc = nc_inq_varid(fileId, fieldName.c_str(), &varId);
+      if (rc != NC_NOERR) {
+        // Variable not in this file; try the next file
+        continue;
+      }
+
+      // Read this rank's rows from the file.
+      // Variable dims:  surface (nLevField==1): (time, lat, lon)
+      //                 multi-level           : (time, lev/edge/four, lat, lon)
+      std::vector<double> values;
+      if (nLevField == 1) {
+        std::vector<size_t> start = {0, nc_j_start, 0};
+        std::vector<size_t> count = {1, static_cast<size_t>(myNLat), nLon};
+        values.resize(static_cast<size_t>(myNLat) * nLon);
+        nc_rc(nc_get_vara_double(fileId, varId, start.data(), count.data(), values.data()),
+              "nc_get_vara_double " + fieldName);
+      } else {
+        std::vector<size_t> start = {0, 0, nc_j_start, 0};
+        std::vector<size_t> count = {1, static_cast<size_t>(nLevField),
+                                     static_cast<size_t>(myNLat), nLon};
+        values.resize(static_cast<size_t>(nLevField) *
+                      static_cast<size_t>(myNLat) * nLon);
+        nc_rc(nc_get_vara_double(fileId, varId, start.data(), count.data(), values.data()),
+              "nc_get_vara_double " + fieldName);
+      }
+
+      // Fill the Atlas StructuredColumns field view.
+      // Buffer: values[k * myNLat * nLon + nc_j_local * nLon + i]
+      //   where nc_j_local = j_end - 1 - j_atlas  (see coordinate convention above).
+      auto fieldView = atlas::array::make_view<double, 2>(field);
+      for (int j = j_beg; j < j_end; ++j) {
+        const int nc_j_local = (j_end - 1) - j;
+        for (atlas::idx_t i = readFunctionSpace_->i_begin(j);
+             i < readFunctionSpace_->i_end(j); ++i) {
+          const atlas::idx_t localIdx = readFunctionSpace_->index(j, i);
+          for (int k = 0; k < nLevField; ++k) {
+            fieldView(localIdx, k) =
+                values[static_cast<size_t>(k) * static_cast<size_t>(myNLat) * nLon
+                       + static_cast<size_t>(nc_j_local) * nLon
+                       + static_cast<size_t>(i)];
+          }
         }
       }
+      field.set_dirty();
+      fieldsRead.insert(field.name());
     }
-    field.set_dirty();
+
+    nc_rc(nc_close(fileId), "nc_close");
   }
 
-  nc_rc(nc_close(fileId), "nc_close");
+  // Warn for any fields not found in any input file
+  for (const auto & field : fields) {
+    if (fieldsRead.find(field.name()) == fieldsRead.end()) {
+      oops::Log::warning() << classname() << "::readStructuredFields: field '"
+                           << field.name() << "' not found in any input file"
+                           << " -- leaving at zero." << std::endl;
+    }
+  }
+
   oops::Log::trace() << classname() << " readStructuredFields done" << std::endl;
 }
 

@@ -32,9 +32,15 @@ class IOStructuredGridParameters : public IOParametersBase {
   // Type of structured grid to write
   oops::Parameter<std::string> outputGridType{"gridtype", "gridtype", "F12", this};
 
-  // Filename of output
+  // Filename of output (write path, or single-file read fallback)
   oops::Parameter<std::string> filename{"filename", "filename",
                                         "cube_to_geometric_%Y%m%dT%H%M%S.nc4", this};
+
+  // Directory containing input files (used together with filenames list for reading)
+  oops::Parameter<std::string> datapath{"datapath", "datapath", "", this};
+
+  // Ordered list of input filenames for reading (fields are searched across all files)
+  oops::Parameter<std::vector<std::string>> filenames{"filenames", "filenames", {}, this};
 
   // Interpolator type
   oops::Parameter<std::string> interpolator{"local interpolator type", "local interpolator type",
