@@ -524,7 +524,7 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
     int fileId;
     nc_rc(nc_open(pathFile.c_str(), NC_NOWRITE, &fileId), "nc_open " + pathFile);
 
-    oops::Log::trace() << classname() << " opened pathFile=" << pathFile << std::endl;
+    oops::Log::trace() << classname() << " open pathFile=" << pathFile << std::endl;
 
     // Read grid dimensions from the file
     int latDimId, lonDimId;
