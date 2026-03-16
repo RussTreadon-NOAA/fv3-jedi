@@ -500,7 +500,11 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
     pathFiles.push_back(pathFile);
   }
 
-  // Track which fields have been populated across all files
+  // Track which fields have been found in at least one file (first-file-wins: once nc_inq_varid
+  // succeeds for a field, that field is never searched in any subsequent file, even if the
+  // dimensions don't match and the read is skipped for that file).
+  std::set<std::string> fieldsFound;
+  // Track which fields were actually read (nc_get_vara_float + Atlas fill completed).
   std::set<std::string> fieldsRead;
 
   // j_beg and j_end depend only on readFunctionSpace_; compute once outside the file loop.
@@ -561,8 +565,8 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
     const size_t nc_j_start = static_cast<size_t>(nLat) - static_cast<size_t>(j_end);
 
     for (auto & field : fields) {
-      // Skip fields already read from an earlier file
-      if (fieldsRead.find(field.name()) != fieldsRead.end()) continue;
+      // Skip fields already found in an earlier file (first-file-wins).
+      if (fieldsFound.count(field.name()) != 0) continue;
 
       const std::string fieldLong = field.name();
       const int nLevField = field.shape(1);
@@ -579,6 +583,10 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
         // Variable not in this file; try the next file
         continue;
       }
+
+      // Field found in this file — mark it so no subsequent file is searched for it.
+      // This enforces first-file-wins semantics even when the ndims check below fails.
+      fieldsFound.insert(field.name());
 
       oops::Log::trace() << classname() << " reading field '" << fieldName
                          << "' nLevField=" << nLevField << std::endl;
@@ -666,12 +674,18 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
     nc_rc(nc_close(fileId), "nc_close");
   }
 
-  // Warn for any fields not found in any input file
+  // Warn for any fields not found in any input file, or found but not read (e.g., ndims mismatch)
   for (const auto & field : fields) {
-    if (fieldsRead.find(field.name()) == fieldsRead.end()) {
-      oops::Log::warning() << classname() << "::readStructuredFields: field '"
-                           << field.name() << "' not found in any input file"
-                           << " -- leaving at zero." << std::endl;
+    if (fieldsRead.count(field.name()) == 0) {
+      if (fieldsFound.count(field.name()) != 0) {
+        oops::Log::warning() << classname() << "::readStructuredFields: field '"
+                             << field.name() << "' was found in an input file but could not be"
+                             << " read (dimension mismatch) -- leaving at zero." << std::endl;
+      } else {
+        oops::Log::warning() << classname() << "::readStructuredFields: field '"
+                             << field.name() << "' not found in any input file"
+                             << " -- leaving at zero." << std::endl;
+      }
     }
   }
 
