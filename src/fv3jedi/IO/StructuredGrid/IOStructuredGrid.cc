@@ -573,6 +573,24 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
         continue;
       }
 
+      oops::Log::trace() << classname() << " reading field '" << fieldName
+                         << "' nLevField=" << nLevField << std::endl;
+
+      // Validate the variable's dimension count against what the read expects.
+      // Surface fields (nLevField==1) expect 3 dims: (time, lat, lon).
+      // Multi-level fields (nLevField>1) expect 4 dims: (time, lev, lat, lon).
+      int varNdims;
+      nc_rc(nc_inq_varndims(fileId, varId, &varNdims), "nc_inq_varndims " + fieldName
+            + " in " + pathFile);
+      const int expectedNdims = (nLevField == 1) ? 3 : 4;
+      if (varNdims != expectedNdims) {
+        oops::Log::warning() << classname() << "::readStructuredFields: '"
+                             << fieldName << "' has " << varNdims << " dimensions in '"
+                             << pathFile << "', expected " << expectedNdims
+                             << " -- skipping." << std::endl;
+        continue;
+      }
+
       // Read this rank's rows from the file.
       // Variable dims:  surface (nLevField==1): (time, lat, lon)
       //                 multi-level           : (time, lev/edge/four, lat, lon)
@@ -596,11 +614,15 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
               "nc_get_vara_float " + fieldName);
       }
 
+      oops::Log::trace() << classname() << " filling Atlas view for '" << fieldName
+                         << "' datatype=" << field.datatype().str() << std::endl;
+
       // Fill the Atlas StructuredColumns field view.
       // Buffer: values[k * myNLat * nLon + nc_j_local * nLon + i]
       //   where nc_j_local = j_end - 1 - j_atlas  (see coordinate convention above).
       // Dispatch on the Atlas field's datatype (float32 or float64) using a lambda to
       // avoid duplicating the fill loop.
+      const std::string dtypeStr = field.datatype().str();
       auto fillFieldView = [&](auto & fv) {
         using ValueType = std::remove_reference_t<decltype(fv(0, 0))>;
         for (int j = j_beg; j < j_end; ++j) {
@@ -617,15 +639,15 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
           }
         }
       };
-      if (field.datatype() == atlas::array::DataType::real64()) {
+      if (dtypeStr == "real64") {
         auto fieldView = atlas::array::make_view<double, 2>(field);
         fillFieldView(fieldView);
-      } else if (field.datatype() == atlas::array::DataType::real32()) {
+      } else if (dtypeStr == "real32") {
         auto fieldView = atlas::array::make_view<float, 2>(field);
         fillFieldView(fieldView);
       } else {
         ABORT("IOStructuredGrid::readStructuredFields: unsupported Atlas field datatype for '"
-              + fieldName + "': " + field.datatype().str());
+              + fieldName + "': " + dtypeStr);
       }
       field.set_dirty();
       fieldsRead.insert(field.name());
