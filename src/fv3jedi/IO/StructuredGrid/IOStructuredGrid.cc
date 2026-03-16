@@ -658,9 +658,13 @@ void IOStructuredGrid::readStructuredFields(const util::DateTime & time,
         }
       };
       if (dtypeStr == "real64") {
+        oops::Log::trace() << classname() << " filling real64 view for '" << fieldName
+                           << "'" << std::endl;
         auto fieldView = atlas::array::make_view<double, 2>(field);
         fillFieldView(fieldView);
       } else if (dtypeStr == "real32") {
+        oops::Log::trace() << classname() << " filling real32 view for '" << fieldName
+                           << "'" << std::endl;
         auto fieldView = atlas::array::make_view<float, 2>(field);
         fillFieldView(fieldView);
       } else {
