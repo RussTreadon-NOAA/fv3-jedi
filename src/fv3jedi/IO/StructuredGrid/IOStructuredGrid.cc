@@ -89,10 +89,17 @@ IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & pa
                                                    *writeFunctionSpace_,
                                                    geom.getComm()));
 
-  // Create a balanced StructuredColumns function space for reading
-  // (balanced distribution so every rank owns points, required for GeometryData triangulation)
+  // Create a balanced StructuredColumns function space for reading.
+  // An explicit equal_regions Distribution is required so that readFunctionSpace_->j_begin()
+  // and readFunctionSpace_->j_end() return the correct per-rank row ranges.  Without an
+  // explicit Distribution, Atlas may fall back to a serial distribution (all points on rank 0),
+  // which causes j_begin()/j_end() to be identical on all ranks and the per-rank NetCDF read and
+  // Atlas field-view fill to access memory out-of-bounds on non-zero ranks.
   // ------------------------------------------------------------------------------------------
-  readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, atlas_conf));
+  const atlas::grid::Distribution readDist(grid,
+      atlas::grid::Partitioner("equal_regions"));
+  readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(
+      grid, readDist, atlas_conf));
 
   // Build GeometryData from the balanced StructuredColumns (source for read interpolation)
   // ---------------------------------------------------------------------------------------
