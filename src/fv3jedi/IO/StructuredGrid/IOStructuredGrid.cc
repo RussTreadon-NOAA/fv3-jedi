@@ -31,7 +31,7 @@ static IOMaker<IOStructuredGrid> makerIOAuxGrid_("auxgrid");
 // -------------------------------------------------------------------------------------------------
 IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & params)
   : IOBase(geom, params.toConfiguration()), interpolator_(), params_(params), gridStr_(""),
-    geom_(geom), writeFunctionSpace_() {
+    geom_(geom), writeFunctionSpace_(), readFunctionSpace_() {
   util::Timer timer(classname(), "IOStructuredGrid");
   oops::Log::trace() << classname() << " constructor starting" << std::endl;
 
@@ -73,9 +73,17 @@ IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & pa
   eckit::LocalConfiguration atlas_conf;
   atlas_conf.set("mpi_comm", geom.getComm().name());
 
-  // Structured grid function space
-  // ------------------------------
+  // Structured grid function space (write)
+  // ---------------------------------------
   writeFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, dist, atlas_conf));
+
+  // Structured grid function space (read)
+  // The read function space uses the same serial distribution (all grid points on rank 0),
+  // mirroring the write function space. It is built once here and cached for all reads.
+  // It is kept as a separate member from writeFunctionSpace_ so that future steps can give it
+  // a different distribution (e.g. equal_regions for parallel reads) without affecting writes.
+  // --------------------------------------------------------------------------------------
+  readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, dist, atlas_conf));
 
   // Create a GeometryData object
   // ----------------------------
@@ -100,14 +108,22 @@ IOStructuredGrid::~IOStructuredGrid() {
 
 void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileionames,
                                 const eckit::LocalConfiguration & fileioscaling) const {
-  ABORT("IOStructuredGrid::read(State) not implemented");
-  }
+  util::Timer timer(classname(), "read state");
+  oops::Log::trace() << classname() << " read state starting" << std::endl;
+  oops::Log::trace() << classname() << " readFunctionSpace_ size = "
+                     << readFunctionSpace_->size() << std::endl;
+  ABORT("IOStructuredGrid::read(State) not yet fully implemented");
+}
 
 // -------------------------------------------------------------------------------------------------
 
 void IOStructuredGrid::read(Increment & dx, const eckit::LocalConfiguration & fileionames,
                                 const eckit::LocalConfiguration & fileioscaling) const {
-  ABORT("IOStructuredGrid::read(Increment) not implemented");
+  util::Timer timer(classname(), "read increment");
+  oops::Log::trace() << classname() << " read increment starting" << std::endl;
+  oops::Log::trace() << classname() << " readFunctionSpace_ size = "
+                     << readFunctionSpace_->size() << std::endl;
+  ABORT("IOStructuredGrid::read(Increment) not yet fully implemented");
 }
 
 // -------------------------------------------------------------------------------------------------
