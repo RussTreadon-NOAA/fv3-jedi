@@ -58,13 +58,19 @@ class IOStructuredGridParameters : public IOParametersBase {
   oops::Parameter<int> floatPrecision{"float precision in bytes", "float precision in bytes", 8,
                                       this};
 
-  // Dimension names
+  // Dimension names (write)
   oops::Parameter<std::string> latName{"latitude dim name", "latitude dim name", "lat", this};
   oops::Parameter<std::string> lonName{"longitude dim name", "longitude dim name", "lon", this};
   oops::Parameter<std::string> levName{"level dim name", "level dim name", "lev", this};
   oops::Parameter<std::string> edgName{"edge dim name", "edge dim name", "edge", this};
   oops::Parameter<std::string> forName{"four level dim name", "four level dim name", "four", this};
   oops::Parameter<std::string> timName{"time dim name", "time dim name", "time", this};
+
+  // Dimension names (read) — UFS/GFS input files use grid_yt / grid_xt
+  oops::Parameter<std::string> readLatName{"read latitude dim name",
+                                           "read latitude dim name", "grid_yt", this};
+  oops::Parameter<std::string> readLonName{"read longitude dim name",
+                                           "read longitude dim name", "grid_xt", this};
 };
 
 // -------------------------------------------------------------------------------------------------
@@ -95,6 +101,13 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
   void writeStructuredFields(const atlas::FieldSet &, const util::DateTime &,
                              const eckit::LocalConfiguration &,
                              const eckit::LocalConfiguration &) const;
+  void readStructuredFields(atlas::FieldSet &, const std::vector<std::string> &,
+                            const util::DateTime &,
+                            const eckit::LocalConfiguration &) const;
+  atlas::Field readVarToStructuredAtlasField(int fileId, const std::string & varName,
+                                             int nLat, int nLon,
+                                             const std::string & latDimName,
+                                             const std::string & lonDimName) const;
 
   // Data
   std::unique_ptr<oops::GlobalInterpolator> interpolator_;
