@@ -102,6 +102,7 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
   std::string gridStr_;
   Parameters_ params_;
   std::unique_ptr<atlas::functionspace::StructuredColumns> writeFunctionSpace_;
+  std::unique_ptr<atlas::functionspace::StructuredColumns> readFunctionSpace_;
 };
 
 // -------------------------------------------------------------------------------------------------
