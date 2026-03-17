@@ -8,6 +8,7 @@
 #include <netcdf.h>
 
 #include <map>
+#include <sstream>
 #include <vector>
 
 #include "atlas/functionspace.h"
@@ -157,6 +158,59 @@ static inline void nc_rc(const int return_code, const std::string & operation) {
     ABORT("IOStructuredGrid netCDF operation \'" + operation + "\' failed with error: "
           + nc_strerror(return_code));
   }
+}
+
+// -------------------------------------------------------------------------------------------------
+
+// Read a global integer attribute from an open NetCDF file. If the attribute is absent, fall back
+// to the length of the named dimension. Aborts on any other NetCDF error.
+static int readGlobalIntAttrOrDimLen(int fileId, const std::string & attrName,
+                                     const std::string & dimName) {
+  int value;
+  const int rc = nc_get_att_int(fileId, NC_GLOBAL, attrName.c_str(), &value);
+  if (rc == NC_NOERR) {
+    return value;
+  }
+  // Attribute not found — fall back to the length of the named dimension
+  int dimId;
+  nc_rc(nc_inq_dimid(fileId, dimName.c_str(), &dimId), "nc_inq_dimid " + dimName);
+  size_t dimLen;
+  nc_rc(nc_inq_dimlen(fileId, dimId, &dimLen), "nc_inq_dimlen " + dimName);
+  return static_cast<int>(dimLen);
+}
+
+// -------------------------------------------------------------------------------------------------
+
+// Given the number of longitudes (im) and latitudes (jm) from a NetCDF file, infer the Atlas
+// regular Gaussian grid string "F<N>" whose ny() and nx(0) match. For a regular Gaussian grid
+// F<N>: ny = 2*N and nx = 4*N. A small search window around N = jm/2 is used to tolerate any
+// edge-case rounding.
+static std::string inferAtlasGaussianGridString(int im, int jm) {
+  const int N_guess = jm / 2;
+  const int search_radius = 4;
+  for (int delta = 0; delta <= search_radius; ++delta) {
+    for (int sign : {1, -1}) {
+      // At delta == 0 only test N_guess once (sign == 1 gives N_guess, skip sign == -1)
+      if (delta == 0 && sign == -1) continue;
+      const int N = N_guess + delta * sign;
+      if (N <= 0) continue;
+      const std::string candidate = "F" + std::to_string(N);
+      try {
+        const atlas::StructuredGrid g(candidate);
+        if (g && g.ny() == jm && g.nx(0) == im) {
+          return candidate;
+        }
+      } catch (...) {
+        continue;
+      }
+    }
+  }
+  std::ostringstream oss;
+  oss << "IOStructuredGrid::inferAtlasGaussianGridString: cannot find Atlas regular Gaussian "
+      << "grid matching im=" << im << ", jm=" << jm
+      << ". Tried N=" << (N_guess - search_radius) << " to N=" << (N_guess + search_radius) << ".";
+  ABORT(oss.str());
+  return "";  // unreachable, but required to satisfy the compiler
 }
 
 // -------------------------------------------------------------------------------------------------
