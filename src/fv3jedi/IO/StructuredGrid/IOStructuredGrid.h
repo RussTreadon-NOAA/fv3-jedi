@@ -10,6 +10,7 @@
 #include <memory>
 #include <ostream>
 #include <string>
+#include <vector>
 
 #include "oops/generic/GlobalInterpolator.h"
 
@@ -32,9 +33,18 @@ class IOStructuredGridParameters : public IOParametersBase {
   // Type of structured grid to write
   oops::Parameter<std::string> outputGridType{"gridtype", "gridtype", "F12", this};
 
-  // Filename of output
+  // Filename of output (write / backward-compatible single-file read)
   oops::Parameter<std::string> filename{"filename", "filename",
                                         "cube_to_geometric_%Y%m%dT%H%M%S.nc4", this};
+
+  // Optional path prefix applied to every entry in filenames (read use-case)
+  oops::Parameter<std::string> datapath{"datapath", "datapath", "", this};
+
+  // List of input files for multi-file read (e.g. separate atm and sfc files).
+  // When non-empty, takes precedence over filename for read operations.
+  // Duplicate variable names across files are resolved with a first-file-wins
+  // policy; a warning is emitted when a variable is skipped due to duplication.
+  oops::Parameter<std::vector<std::string>> filenames{"filenames", "filenames", {}, this};
 
   // Interpolator type
   oops::Parameter<std::string> interpolator{"local interpolator type", "local interpolator type",
