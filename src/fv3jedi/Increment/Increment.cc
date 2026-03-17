@@ -16,16 +16,18 @@
 #include <vector>
 
 #include "atlas/field.h"
+#include "atlas/functionspace.h"
 
+#include "eckit/config/Configuration.h"
 #include "eckit/exception/Exceptions.h"
 
+#include "oops/base/GeometryData.h"
 #include "oops/base/Variables.h"
+#include "oops/generic/GlobalInterpolator.h"
 #include "oops/util/DateTime.h"
 #include "oops/util/Duration.h"
+#include "oops/util/FieldSetOperations.h"
 #include "oops/util/Logger.h"
-
-#include "ufo/GeoVaLs.h"
-#include "ufo/Locations.h"
 
 #include "fv3jedi/Geometry/Geometry.h"
 #include "fv3jedi/Increment/Increment.h"
@@ -35,24 +37,61 @@
 namespace fv3jedi {
 
 // -------------------------------------------------------------------------------------------------
+
 Increment::Increment(const Geometry & geom, const oops::Variables & vars,
                      const util::DateTime & time)
-  : geom_(geom), time_(time),
-    vars_(geom_.fieldsMetaData().getLongNameFromAnyName(vars))
+  : geom_(geom), vars_(vars), time_(time)
 {
   oops::Log::trace() << "Increment::Increment (from geom, vars and time) starting" << std::endl;
+  vars_.sort();
   fv3jedi_increment_create_f90(keyInc_, geom_.toFortran(), vars_, time_);
   fv3jedi_increment_zero_f90(keyInc_);
   oops::Log::trace() << "Increment::Increment (from geom, vars and time) done" << std::endl;
 }
 // -------------------------------------------------------------------------------------------------
-Increment::Increment(const Geometry & geom, const Increment & other)
+Increment::Increment(const Geometry & geom, const Increment & other, const bool ad)
   : geom_(geom), vars_(other.vars_), time_(other.time_)
 {
   oops::Log::trace() << "Increment::Increment (from geom and other) starting" << std::endl;
   fv3jedi_increment_create_f90(keyInc_, geom_.toFortran(), vars_, time_);
-  fv3jedi_increment_change_resol_f90(keyInc_, geom_.toFortran(), other.keyInc_,
-                                     other.geom_.toFortran());
+
+  // If both increments have same resolution, then copy instead of interpolating
+  if (geom_.isEqual(other.geom_)) {
+    fv3jedi_increment_copy_f90(keyInc_, other.keyInc_);
+    time_ = other.time_;
+    return;
+  }
+
+  eckit::LocalConfiguration conf;
+  // Use oops interpolator for consistency with State resolution change.
+  conf.set("local interpolator type", "oops unstructured grid interpolator");
+
+  atlas::FieldSet source{};
+  atlas::FieldSet target{};
+
+  if (ad) {
+    const oops::GeometryData source_geom(geom_.functionSpace(),
+                                         geom_.fields(),
+                                         geom_.levelsAreTopDown(),
+                                         geom_.getComm());
+    const atlas::FunctionSpace target_fs = other.geom_.functionSpace();
+    oops::GlobalInterpolator interp(conf, source_geom, target_fs, geom_.getComm());
+
+    other.toFieldSet(target);
+    interp.applyAD(source, target);
+    this->fromFieldSet(source);
+  } else {
+    const oops::GeometryData source_geom(other.geom_.functionSpace(),
+                                         other.geom_.fields(),
+                                         other.geom_.levelsAreTopDown(),
+                                         other.geom_.getComm());
+    const atlas::FunctionSpace target_fs = geom_.functionSpace();
+    oops::GlobalInterpolator interp(conf, source_geom, target_fs, geom_.getComm());
+
+    other.toFieldSet(source);
+    interp.apply(source, target);
+    this->fromFieldSet(target);
+  }
   oops::Log::trace() << "Increment::Increment (from geom and other) done" << std::endl;
 }
 // -------------------------------------------------------------------------------------------------
@@ -95,7 +134,8 @@ Increment & Increment::operator=(const Increment & rhs) {
 // -------------------------------------------------------------------------------------------------
 void Increment::updateFields(const oops::Variables & newVars) {
   vars_ = newVars;
-  fv3jedi_increment_update_fields_f90(keyInc_, geom_.toFortran(), newVars);
+  vars_.sort();
+  fv3jedi_increment_update_fields_f90(keyInc_, geom_.toFortran(), vars_);
 }
 // -------------------------------------------------------------------------------------------------
 Increment & Increment::operator+=(const Increment & dx) {
@@ -126,6 +166,13 @@ void Increment::zero(const util::DateTime & vt) {
 // -------------------------------------------------------------------------------------------------
 void Increment::ones() {
   fv3jedi_increment_ones_f90(keyInc_);
+}
+// -------------------------------------------------------------------------------------------------
+void Increment::sqrt() {
+  atlas::FieldSet fset{};
+  toFieldSet(fset);
+  util::sqrtFieldSet(fset);
+  fromFieldSet(fset);
 }
 // -------------------------------------------------------------------------------------------------
 void Increment::axpy(const double & zz, const Increment & dx, const bool check) {
@@ -182,15 +229,13 @@ void Increment::toFieldSet(atlas::FieldSet & fset) const {
   fv3jedi_increment_to_fieldset_f90(keyInc_, geom_.toFortran(), vars_, fset.get());
 }
 // -------------------------------------------------------------------------------------------------
-void Increment::toFieldSetAD(const atlas::FieldSet & fset) {
-  fv3jedi_increment_to_fieldset_ad_f90(keyInc_, geom_.toFortran(), vars_, fset.get());
-}
-// -------------------------------------------------------------------------------------------------
 void Increment::fromFieldSet(const atlas::FieldSet & fset) {
   fv3jedi_increment_from_fieldset_f90(keyInc_, geom_.toFortran(), vars_, fset.get());
 }
 // -------------------------------------------------------------------------------------------------
-void Increment::read(const ReadParameters_ & params) {
+void Increment::read(const eckit::Configuration & config) {
+  ReadParameters_ params;
+  params.deserialize(config);
   // Optionally set the datetime on read (needed for some bump applications)
   if (params.setdatetime.value() != boost::none) {
     if (*params.setdatetime.value() && params.datetime.value() != boost::none) {
@@ -201,15 +246,17 @@ void Increment::read(const ReadParameters_ & params) {
   std::unique_ptr<IOBase> io(IOFactory::create(geom_,
                                                *params.ioParametersWrapper.ioParameters.value()));
   // Perform read
-  io->read(*this);
+  io->readBase(*this);
 }
 // -------------------------------------------------------------------------------------------------
-void Increment::write(const WriteParameters_ & params) const {
+void Increment::write(const eckit::Configuration & config) const {
+  WriteParameters_ params;
+  params.deserialize(config);
   // Create IO object
   std::unique_ptr<IOBase> io(IOFactory::create(geom_,
                                                *params.ioParametersWrapper.ioParameters.value()));
-  // Perform read
-  io->write(*this);
+  // Perform write
+  io->writeBase(*this);
 }
 // -------------------------------------------------------------------------------------------------
 double Increment::norm() const {
@@ -237,7 +284,7 @@ void Increment::print(std::ostream & os) const {
   std::vector<double> minMaxRms(3);
   for (int f = 0; f < numberFields; f++) {
     int fp1 = f+1;
-    fv3jedi_increment_getminmaxrms_f90(keyInc_, fp1, FieldNameLen, fieldName, minMaxRms[0]);
+    fv3jedi_increment_getminmaxrms_f90(keyInc_, fp1, FieldNameLen-1, fieldName, minMaxRms[0]);
     std::string fieldNameStr(fieldName);
     os << std::endl << std::scientific << std::showpos << fieldNameStr.substr(0, FieldNameLen-1)
                     << " | Min:" << minMaxRms[0] << " Max:" << minMaxRms[1]
@@ -252,47 +299,10 @@ void Increment::print(std::ostream & os) const {
         "--------------------------------------------------";
 }
 // -------------------------------------------------------------------------------------------------
-void Increment::dirac(const DiracParameters_ & params) {
+void Increment::dirac(const eckit::Configuration & config) {
+  DiracParameters_ params;
+  params.deserialize(config);
   fv3jedi_increment_dirac_f90(keyInc_, params.toConfiguration(), geom_.toFortran());
-}
-// -------------------------------------------------------------------------------------------------
-std::vector<double> Increment::rmsByLevel(const std::string & var) const {
-  atlas::FieldSet fset;
-  toFieldSet(fset);
-  const auto fieldView = atlas::array::make_view<double, 2>(fset[var]);
-
-  // Get halo mask from Geometry
-  const auto haloMask = geom_.extraFields().field("hmask");
-  const auto haloMaskView = atlas::array::make_view<int, 2>(haloMask);
-  ASSERT(haloMaskView.shape(0) == fieldView.shape(0));
-  ASSERT(haloMaskView.shape(1) == 1);
-
-  // Find number of owned grid points on this task
-  size_t num_owned = 0;
-  for (atlas::idx_t i = 0; i < haloMaskView.shape(0); ++i) {
-    if (haloMaskView(i, 0) > 0) {
-      ++num_owned;
-    }
-  }
-
-  // Find RMS sum-of-squares contribution from this task
-  std::vector<double> rms(fieldView.shape(1), 0.0);
-  for (atlas::idx_t k = 0; k < fieldView.shape(1); ++k) {
-    for (atlas::idx_t i = 0; i < fieldView.shape(0); ++i) {
-      if (haloMaskView(i, 0) > 0) {
-        rms[k] += fieldView(i, k) * fieldView(i, k);
-      }
-    }
-  }
-
-  geom_.getComm().allReduceInPlace(num_owned, eckit::mpi::Operation::SUM);
-  geom_.getComm().allReduceInPlace(rms.data(), fieldView.shape(1), eckit::mpi::Operation::SUM);
-
-  for (atlas::idx_t k = 0; k < fieldView.shape(1); ++k) {
-    rms[k] = sqrt(rms[k] / num_owned);
-  }
-
-  return rms;
 }
 // -------------------------------------------------------------------------------------------------
 size_t Increment::serialSize() const {

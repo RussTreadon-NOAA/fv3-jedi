@@ -1,0 +1,81 @@
+geometry:
+  fms initialization:
+    namelist filename: Data/fv3files/fmsmpp.nml
+    field table filename: Data/fv3files/field_table_gfdl
+  akbk: Data/inputs/fv3files/akbk127.nc4
+  npx: 13
+  npy: 13
+  npz: 127
+recenter variables:
+- eastward_wind
+- northward_wind
+- air_temperature
+- air_pressure_thickness
+- water_vapor_mixing_ratio_wrt_moist_air
+- cloud_liquid_ice
+- cloud_liquid_water
+- ozone_mass_mixing_ratio
+center:
+  datetime: 2020-12-15T00:00:00Z
+  filetype: fms restart
+  state variables:
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - ozone_mass_mixing_ratio
+  datapath: Data/inputs/gfs_c12/bkg/
+  filename_core: 20201215.000000.fv_core.res.nc
+  filename_trcr: 20201215.000000.fv_tracer.res.nc
+  filename_sfcd: 20201215.000000.sfc_data.nc
+  filename_sfcw: 20201215.000000.fv_srf_wnd.res.nc
+  filename_cplr: 20201215.000000.coupler.res
+  field io names: &field_io_names
+    eastward_wind: ua
+    northward_wind: va
+    air_temperature: T
+    air_pressure_thickness: delp
+    water_vapor_mixing_ratio_wrt_moist_air: sphum
+    cloud_liquid_ice: ice_wat
+    cloud_liquid_water: liq_wat
+    ozone_mass_mixing_ratio: o3mr
+ensemble:
+  members from template:
+    template:
+      datetime: 2020-12-15T00:00:00Z
+      filetype: fms restart
+      state variables:
+      - eastward_wind
+      - northward_wind
+      - air_temperature
+      - air_pressure_thickness
+      - water_vapor_mixing_ratio_wrt_moist_air
+      - cloud_liquid_ice
+      - cloud_liquid_water
+      - ozone_mass_mixing_ratio
+      datapath: Data/inputs/gfs_c12/mem%mem%/
+      filename_core: 20201215.000000.fv_core.res.nc
+      filename_trcr: 20201215.000000.fv_tracer.res.nc
+      filename_sfcd: 20201215.000000.sfc_data.nc
+      filename_sfcw: 20201215.000000.fv_srf_wnd.res.nc
+      filename_cplr: 20201215.000000.coupler.res
+      field io names: *field_io_names
+    pattern: '%mem%'
+    nmembers: 10
+    zero padding: 3
+recentered output:
+  filetype: fms restart
+  datapath: Data/analysis/letkf/gfs/mem%{member}%/
+  date: 2020-12-15T00:00:00Z
+  filename_core: recentered.fv_core.res.nc
+  filename_trcr: recentered.fv_tracer.res.nc
+  filename_sfcd: recentered.sfc_data.nc
+  filename_sfcw: recentered.fv_srf_wnd.res.nc
+  filename_cplr: recentered.coupler.res
+  field io names: *field_io_names
+test:
+  reference filename: testoutput/ensrecenter_gfs.ref
+  test output filename: testoutput/ensrecenter_gfs.test.out

@@ -74,10 +74,19 @@ GeometryIterator& GeometryIterator::operator++() {
 // -----------------------------------------------------------------------------
 
 double GeometryIterator::getOrography() const {
-  ASSERT(geom_.extraFields().has_field("filtered_orography"));
+  ASSERT(geom_.fields().has("filtered_orography"));
   double orography;
   fv3jedi_geom_iter_orography_f90(keyIter_, orography);
   return orography;
+}
+
+// -----------------------------------------------------------------------------
+
+double GeometryIterator::getNominalSurfacePressure() const {
+  ASSERT(geom_.fields().has("nominal_surface_pressure"));
+  double nsp;
+  fv3jedi_geom_iter_nominal_surface_pressure_f90(keyIter_, nsp);
+  return nsp;
 }
 
 // -----------------------------------------------------------------------------

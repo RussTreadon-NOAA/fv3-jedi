@@ -2,12 +2,10 @@ geometry:
   fms initialization:
     namelist filename: Data/fv3files/fmsmpp.nml
     field table filename: Data/fv3files/field_table_gmao
-
-  akbk: Data/fv3files/akbk72.nc4
+  akbk: Data/inputs/fv3files/akbk72.nc4
   npx: 13
   npy: 13
   npz: 72
-  field metadata override: Data/fieldmetadata/gchp.yaml
 state test:
   statefile:
     datetime: 2021-08-15T03:00:00Z
@@ -15,9 +13,11 @@ state test:
     provider: geos
     datapath: Data/inputs/GEOSChem_c12
     filename: GEOSChem.DefaultCollection.20210815_0300z.nc4
-    tile is a dimension: [true]
-    clobber existing files: [false]
-    state variables: 
+    tile is a dimension:
+    - true
+    clobber existing files:
+    - false
+    state variables:
     - air_temperature
     - pm25at
     - volume_mixing_ratio_of_co
@@ -25,6 +25,14 @@ state test:
     - volume_mixing_ratio_of_no2
     - volume_mixing_ratio_of_o3
     - volume_mixing_ratio_of_oh
+    field io names:
+      air_temperature: Met_T
+      pm25at: PM25
+      volume_mixing_ratio_of_co: SpeciesConc_CO
+      volume_mixing_ratio_of_no: SpeciesConc_NO
+      volume_mixing_ratio_of_no2: SpeciesConc_NO2
+      volume_mixing_ratio_of_o3: SpeciesConc_O3
+      volume_mixing_ratio_of_oh: SpeciesConc_OH
   state generate:
     analytic init:
       method: dcmip-test-4-0
@@ -32,3 +40,5 @@ state test:
   date: 2021-08-15T03:00:00Z
   norm file: 93.349568287678082
   tolerance: 1.0e-08
+  construct to variables:
+  - air_temperature

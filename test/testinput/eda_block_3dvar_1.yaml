@@ -1,8 +1,17 @@
 cost function:
   cost type: 3D-Var
-  window begin: 2020-12-14T21:00:00Z
-  window length: PT6H
-  analysis variables: &3dvars [ua,va,T,DELP,sphum,ice_wat,liq_wat,o3mr]
+  time window:
+    begin: 2020-12-14T21:00:00Z
+    length: PT6H
+  analysis variables: &3dvars
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - ozone_mass_mixing_ratio
   background:
     datetime: 2020-12-15T00:00:00Z
     filetype: fms restart
@@ -12,25 +21,54 @@ cost function:
     filename_sfcd: 20201215.000000.sfc_data.nc
     filename_sfcw: 20201215.000000.fv_srf_wnd.res.nc
     filename_cplr: 20201215.000000.coupler.res
-    state variables: [ua,va,T,DELP,sphum,ice_wat,liq_wat,o3mr]
+    state variables:
+    - eastward_wind
+    - northward_wind
+    - air_temperature
+    - air_pressure_thickness
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - cloud_liquid_ice
+    - cloud_liquid_water
+    - ozone_mass_mixing_ratio
+    field io names: &field_io_names
+      eastward_wind: ua
+      northward_wind: va
+      air_temperature: T
+      air_pressure_thickness: delp
+      water_vapor_mixing_ratio_wrt_moist_air: sphum
+      cloud_liquid_ice: ice_wat
+      cloud_liquid_water: liq_wat
+      ozone_mass_mixing_ratio: o3mr
   background error:
     covariance model: hybrid
     components:
     - covariance:
         covariance model: SABER
-        saber blocks:
-        - saber block name: BUMP_NICAS
-          saber central block: true
-          input variables: *3dvars
-          output variables: *3dvars
-          bump:
-            prefix: Data/bump/fv3jedi_bumpparameters_nicas_3D_gfs
-            method: cor
-            strategy: specific_univariate
-            load_nicas_local: true
-            verbosity: main
-            io_keys: [eastward_wind-eastward_wind,northward_wind-northward_wind,air_temperature-air_temperature,air_pressure_thickness-air_pressure_thickness,specific_humidity-specific_humidity,cloud_liquid_ice-cloud_liquid_ice,cloud_liquid_water-cloud_liquid_water,ozone_mass_mixing_ratio-ozone_mass_mixing_ratio]
-            io_values: [fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3,fixed_2500km_0.3]
+        saber central block:
+          saber block name: BUMP_NICAS
+          read:
+            io:
+              files prefix: Data/bump/fv3jedi_bumpparameters_nicas_gfs
+              alias:
+              - in code: eastward_wind
+                in file: fixed_2500km_0.3
+              - in code: northward_wind
+                in file: fixed_2500km_0.3
+              - in code: air_temperature
+                in file: fixed_2500km_0.3
+              - in code: air_pressure_thickness
+                in file: fixed_2500km_0.3
+              - in code: water_vapor_mixing_ratio_wrt_moist_air
+                in file: fixed_2500km_0.3
+              - in code: cloud_liquid_ice
+                in file: fixed_2500km_0.3
+              - in code: cloud_liquid_water
+                in file: fixed_2500km_0.3
+              - in code: ozone_mass_mixing_ratio
+                in file: fixed_2500km_0.3
+            drivers:
+              multivariate strategy: univariate
+              read local nicas: true
       weight:
         value: 0.1
     - covariance:
@@ -46,23 +84,23 @@ cost function:
             filename_sfcd: 20201215.000000.sfc_data.nc
             filename_sfcw: 20201215.000000.fv_srf_wnd.res.nc
             filename_cplr: 20201215.000000.coupler.res
+            field io names: *field_io_names
           pattern: '%mem%'
           nmembers: 3
           zero padding: 3
         localization:
           localization method: SABER
-          saber block:
+          saber central block:
             saber block name: BUMP_NICAS
-            input variables: *3dvars
-            output variables: *3dvars
-            bump:
-              prefix: Data/bump/fv3jedi_bumpparameters_nicas_3D_gfs
-              method: loc
-              strategy: common
-              load_nicas_local: true
-              verbosity: main
-              io_keys: [common]
-              io_values: [fixed_2500km_0.3]
+            read:
+              io:
+                files prefix: Data/bump/fv3jedi_bumpparameters_nicas_gfs
+                alias:
+                - in code: common
+                  in file: fixed_2500km_0.3
+              drivers:
+                multivariate strategy: duplicated
+                read local nicas: true
       weight:
         value: 0.9
   observations:
@@ -77,21 +115,26 @@ cost function:
           engine:
             type: H5File
             obsfile: Data/hofx/eda/gfs/mem001/block_sondes_eda-3dvar-gfs_2020121500_m.nc4
-        simulated variables: [eastward_wind, northward_wind, air_temperature]
-        obs perturbations seed: 1
+        simulated variables:
+        - windEastward
+        - windNorthward
+        - airTemperature
       obs operator:
         name: VertInterp
+        vertical coordinate: air_pressure
+        observation vertical coordinate: pressure
+        observation vertical coordinate group: MetaData
+        interpolation method: log-linear
       obs error:
         covariance model: diagonal
-        random amplitude: 0.5
       obs filters:
       - filter: PreQC
         maxvalue: 3
       - filter: Background Check
         filter variables:
-        - name: eastward_wind
-        - name: northward_wind
-        - name: air_temperature
+        - name: windEastward
+        - name: windNorthward
+        - name: airTemperature
         threshold: 6.0
   filetype: fms restart
   datapath: Data/inputs/gfs_c12/bkg/
@@ -100,23 +143,21 @@ cost function:
   filename_sfcd: 20201215.000000.sfc_data.nc
   filename_sfcw: 20201215.000000.fv_srf_wnd.res.nc
   filename_cplr: 20201215.000000.coupler.res
+  field io names: *field_io_names
   geometry:
     fms initialization:
       namelist filename: Data/fv3files/fmsmpp.nml
       field table filename: Data/fv3files/field_table_gfdl
-    akbk: Data/fv3files/akbk127.nc4
+    akbk: Data/inputs/fv3files/akbk127.nc4
     npx: 13
     npy: 13
     npz: 127
-    field metadata override: Data/fieldmetadata/gfs-restart.yaml
 output:
   filetype: fms restart
   datapath: Data/analysis/eda/gfs/mem001
   prefix: eda-3dvar-block-gfs
   frequency: PT1H
-final:
-  diagnostics:
-    departures: oman
+  field io names: *field_io_names
 variational:
   minimizer:
     algorithm: DRPBlockLanczos
@@ -124,24 +165,22 @@ variational:
     online diagnostics:
       write basis: false
       krylov basis:
-        filetype: fms restart
-        datapath: Data/analysis/eda/gfs/mem001/
-        filename_core: krylov.fv_core.res.nc
-        filename_trcr: krylov.fv_tracer.res.nc
-        filename_sfcd: krylov.sfc_data.nc
-        filename_sfcw: krylov.fv_srf_wnd.res.nc
-        filename_cplr: krylov.coupler.res
-        analysis variables: *3dvars
+        state component:
+          filetype: fms restart
+          datapath: Data/analysis/eda/gfs/mem001/
+          filename_core: krylov.fv_core.res.nc
+          filename_trcr: krylov.fv_tracer.res.nc
+          filename_sfcd: krylov.sfc_data.nc
+          filename_sfcw: krylov.fv_srf_wnd.res.nc
+          filename_cplr: krylov.coupler.res
+          analysis variables: *3dvars
+          field io names: *field_io_names
   iterations:
   - ninner: 2
     gradient norm reduction: 1e-10
     test: on
     geometry:
-      akbk: Data/fv3files/akbk127.nc4
+      akbk: Data/inputs/fv3files/akbk127.nc4
       npx: 13
       npy: 13
       npz: 127
-      field metadata override: Data/fieldmetadata/gfs-restart.yaml
-    diagnostics:
-      departures: ombg
-    obs perturbations: false

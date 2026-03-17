@@ -2,34 +2,49 @@ geometry:
   fms initialization:
     namelist filename: Data/fv3files/input_geos_c12.nml
     field table filename: Data/fv3files/field_table_gmao
-  akbk: Data/fv3files/akbk72.nc4
+  akbk: Data/inputs/fv3files/akbk72.nc4
   npx: 13
   npy: 13
   npz: 72
-  field metadata override: Data/fieldmetadata/geos.yaml
-initial condition:
+background:
   datetime: 2020-12-14T21:00:00Z
   filetype: cube sphere history
   provider: geos
   datapath: Data/inputs/geos_c12
   filename: geos.bkg.20201214_210000z.nc4
-  state variables: &vars [ua,va,t,ps,q,qi,ql,o3ppmv]
+  state variables: &vars
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_at_surface
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - mole_fraction_of_ozone_in_air
+  field io names: &field_io_names
+    eastward_wind: ua
+    northward_wind: va
+    air_temperature: t
+    air_pressure_at_surface: ps
+    water_vapor_mixing_ratio_wrt_moist_air: q
+    cloud_liquid_ice: qi
+    cloud_liquid_water: ql
+    mole_fraction_of_ozone_in_air: o3ppmv
 background error:
   covariance model: ensemble
   localization:
     localization method: SABER
-    saber block:
+    saber central block:
       saber block name: BUMP_NICAS
-      input variables: *vars
-      output variables: *vars
-      bump:
-        prefix: Data/bump/fv3jedi_bumpparameters_nicas_3D_geos
-        method: loc
-        strategy: common
-        load_nicas_local: true
-        verbosity: main
-        io_keys: [common]
-        io_values: [fixed_2500km_0.3]
+      read:
+        io:
+          files prefix: Data/bump/fv3jedi_bumpparameters_nicas_geos
+          alias:
+          - in code: common
+            in file: fixed_2500km_0.3
+        drivers:
+          multivariate strategy: duplicated
+          read local nicas: true
   members from template:
     template:
       datetime: 2020-12-14T21:00:00Z
@@ -38,6 +53,7 @@ background error:
       state variables: *vars
       datapath: Data/inputs/geos_c12
       filename: geos.mem%mem%.20201214_210000z.nc4
+      field io names: *field_io_names
     pattern: '%mem%'
     nmembers: 5
     zero padding: 3
@@ -46,15 +62,19 @@ output dirac:
   provider: geos
   datapath: Data/bump/
   filename: dirac.%id%.%yyyy%mm%dd_%hh%MM%ssz.nc4
+  field io names: *field_io_names
 dirac:
   ndir: 1
-  ixdir: [1]
-  iydir: [1]
-  ildir: [50]
-  itdir: [1]
-  ifdir: [air_temperature]
-
-
+  ixdir:
+  - 1
+  iydir:
+  - 1
+  ildir:
+  - 50
+  itdir:
+  - 1
+  ifdir:
+  - air_temperature
 test:
   reference filename: testoutput/dirac_geos.ref
   test output filename: testoutput/dirac_geos.test.out

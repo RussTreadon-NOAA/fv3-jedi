@@ -2,26 +2,59 @@ geometry:
   fms initialization:
     namelist filename: Data/fv3files/fmsmpp.nml
     field table filename: Data/fv3files/field_table_gmao
-  akbk: Data/fv3files/akbk72.nc4
+  akbk: Data/inputs/fv3files/akbk72.nc4
   npx: 13
   npy: 13
   npz: 72
-  field metadata override: Data/fieldmetadata/geos.yaml
 state test:
   statefile:
     datetime: 2020-12-14T21:00:00Z
     filetype: cube sphere history
     provider: geos
     datapath: Data/inputs/geos_c12
-    filenames: [geos.bkg.20201214_210000z.nc4, geos.bkg.crtmsrf.20201214_210000z.nc4]
-    tile is a dimension: [true, true]
-    clobber existing files: [false, false]
-    state variables: [u,v,ua,va,t,delp,q,qi,ql,o3ppmv,phis]
+    max allowable geometry difference: 1e-12
+    filenames:
+    - geos.bkg.20201214_210000z.nc4
+    - geos.bkg.crtmsrf.20201214_210000z.nc4
+    tile is a dimension:
+    - true
+    - true
+    clobber existing files:
+    - false
+    - false
+    state variables:
+    - eastward_wind
+    - northward_wind
+    - air_temperature
+    - air_pressure_thickness
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - cloud_liquid_ice
+    - cloud_liquid_water
+    - mole_fraction_of_ozone_in_air
+    - geopotential_height_times_gravity_at_surface
+    field io names:
+      eastward_wind: ua
+      northward_wind: va
+      air_temperature: t
+      air_pressure_thickness: delp
+      water_vapor_mixing_ratio_wrt_moist_air: q
+      cloud_liquid_ice: qi
+      cloud_liquid_water: ql
+      mole_fraction_of_ozone_in_air: o3ppmv
+      geopotential_height_times_gravity_at_surface: phis
   state generate:
     analytic init:
       method: dcmip-test-4-0
     datetime: 2020-12-14T21:00:00Z
   date: 2020-12-14T21:00:00Z
-  norm file: 660.9517923562712
+  norm file: 738.77144154508881
   norm generated state: 14954.334047185948
   tolerance: 1.0e-08
+  construct to variables:
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_at_surface
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water

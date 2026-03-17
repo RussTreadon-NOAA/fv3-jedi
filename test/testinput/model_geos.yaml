@@ -2,16 +2,14 @@ geometry:
   fms initialization:
     namelist filename: Data/fv3files/fmsmpp.nml
     field table filename: Data/fv3files/field_table_gmao
-  akbk: Data/fv3files/akbk72.nc4
+  akbk: Data/inputs/fv3files/akbk72.nc4
   npx: 13
   npy: 13
   npz: 72
-  field metadata override: Data/fieldmetadata/geos.yaml
 model:
   name: GEOS
   tstep: PT30M
   geos_run_directory: Data/ModelRunDirs/GEOS/
-  model variables: [U,V,PT,PKZ,PE,Q,QILS,QLLS,QICN,QLCN]
   reforecast: true
 model aux control: null
 model aux error: null
@@ -25,6 +23,33 @@ initial condition:
   filetype: cube sphere history
   provider: geos
   datapath: Data/ModelRunDirs/GEOS
-  filenames: [fvcore_internal_rst, moist_internal_rst, fvcore_internal_rst]
-  tile is a dimension: [false, false, false]
-  state variables: [U,V,PT,PKZ,PE,Q,QILS,QLLS,QICN,QLCN]
+  filenames:
+  - fvcore_internal_rst
+  - moist_internal_rst
+  - fvcore_internal_rst
+  tile is a dimension:
+  - false
+  - false
+  - false
+  state variables:
+    - eastward_wind
+    - northward_wind
+    - air_potential_temperature
+    - air_pressure_to_kappa
+    - air_pressure_levels
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - mass_fraction_of_large_scale_cloud_ice_water
+    - mass_fraction_of_large_scale_cloud_liquid_water
+    - mass_fraction_of_convective_cloud_ice_water
+    - mass_fraction_of_convective_cloud_liquid_water
+  field io names: &field_io_names
+    eastward_wind: UA
+    northward_wind: VA
+    air_potential_temperature: PT
+    air_pressure_to_kappa: PKZ
+    air_pressure_levels: PE
+    water_vapor_mixing_ratio_wrt_moist_air: Q
+    mass_fraction_of_large_scale_cloud_ice_water: QILS
+    mass_fraction_of_large_scale_cloud_liquid_water: QLLS
+    mass_fraction_of_convective_cloud_ice_water: QICN
+    mass_fraction_of_convective_cloud_liquid_water: QLCN

@@ -1,21 +1,34 @@
 cost function:
   cost type: 3D-Var
-  window begin: 2018-04-14T21:00:00Z
-  window length: PT6H
+  time window:
+    begin: 2018-04-14T21:00:00Z
+    length: PT6H
   analysis variables: &aerovars
-                      [sulf,bc1,bc2,oc1,oc2,
-                      dust1,dust2,dust3,dust4,dust5,
-                      seas1,seas2,seas3,seas4]
+  - mass_fraction_of_sulfate_in_air
+  - mass_fraction_of_hydrophobic_black_carbon_in_air
+  - mass_fraction_of_hydrophilic_black_carbon_in_air
+  - mass_fraction_of_hydrophobic_organic_carbon_in_air
+  - mass_fraction_of_hydrophilic_organic_carbon_in_air
+  - mass_fraction_of_dust001_in_air
+  - mass_fraction_of_dust002_in_air
+  - mass_fraction_of_dust003_in_air
+  - mass_fraction_of_dust004_in_air
+  - mass_fraction_of_dust005_in_air
+  - mass_fraction_of_sea_salt001_in_air
+  - mass_fraction_of_sea_salt002_in_air
+  - mass_fraction_of_sea_salt003_in_air
+  - mass_fraction_of_sea_salt004_in_air
   geometry:
     fms initialization:
       namelist filename: Data/fv3files/fmsmpp.nml
       field table filename: Data/fv3files/field_table_gfdl
-    akbk: Data/fv3files/akbk64.nc4
-    layout: [1,2]
+    akbk: Data/inputs/fv3files/akbk64.nc4
+    layout:
+    - 1
+    - 2
     npx: 13
     npy: 13
     npz: 64
-    field metadata override: Data/fieldmetadata/gfs-aerosol.yaml
   background:
     datetime: 2018-04-15T00:00:00Z
     filetype: fms restart
@@ -23,51 +36,70 @@ cost function:
     filename_core: 20180415.000000.fv_core.res.nc
     filename_trcr: 20180415.000000.fv_tracer.res.nc
     filename_cplr: 20180415.000000.coupler.res
-    state variables: &state_vars [t,delp,sphum,sulf,bc1,bc2,oc1,oc2,
-                      dust1,dust2,dust3,dust4,dust5,
-                      seas1,seas2,seas3,seas4]
+    state variables: &state_vars
+    - air_temperature
+    - air_pressure_thickness
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - mass_fraction_of_sulfate_in_air
+    - mass_fraction_of_hydrophobic_black_carbon_in_air
+    - mass_fraction_of_hydrophilic_black_carbon_in_air
+    - mass_fraction_of_hydrophobic_organic_carbon_in_air
+    - mass_fraction_of_hydrophilic_organic_carbon_in_air
+    - mass_fraction_of_dust001_in_air
+    - mass_fraction_of_dust002_in_air
+    - mass_fraction_of_dust003_in_air
+    - mass_fraction_of_dust004_in_air
+    - mass_fraction_of_dust005_in_air
+    - mass_fraction_of_sea_salt001_in_air
+    - mass_fraction_of_sea_salt002_in_air
+    - mass_fraction_of_sea_salt003_in_air
+    - mass_fraction_of_sea_salt004_in_air
+    field io names: &field_io_names
+      mass_fraction_of_sulfate_in_air: sulf
+      mass_fraction_of_hydrophobic_black_carbon_in_air: bc1
+      mass_fraction_of_hydrophilic_black_carbon_in_air: bc2
+      mass_fraction_of_hydrophobic_organic_carbon_in_air: oc1
+      mass_fraction_of_hydrophilic_organic_carbon_in_air: oc2
+      mass_fraction_of_dust001_in_air: dust1
+      mass_fraction_of_dust002_in_air: dust2
+      mass_fraction_of_dust003_in_air: dust3
+      mass_fraction_of_dust004_in_air: dust4
+      mass_fraction_of_dust005_in_air: dust5
+      mass_fraction_of_sea_salt001_in_air: seas1
+      mass_fraction_of_sea_salt002_in_air: seas2
+      mass_fraction_of_sea_salt003_in_air: seas3
+      mass_fraction_of_sea_salt004_in_air: seas4
+      air_temperature: T
+      air_pressure_thickness: DELP
+      water_vapor_mixing_ratio_wrt_moist_air: sphum
   background error:
     covariance model: SABER
-    saber blocks:
-    - saber block name: BUMP_NICAS
-      saber central block: true
-      iterative inverse: true
-      input variables: &control_vars [sulf,bc1,bc2,oc1,oc2,
-                       dust1,dust2,dust3,dust4,dust5,
-                       seas1,seas2,seas3,seas4]
-      output variables: *control_vars
-      bump:
-        datadir: Data/staticb_aero
-        prefix: nicas_aero
-        verbosity: main
-        strategy: specific_univariate
-        load_nicas_local: true
-        universe radius:
-          set datetime on read: true
-          datetime: 2018-04-15T00:00:00Z
-          filetype: fms restart
-          datapath: Data/staticb_aero/
-          filename_core: 20180415.000000.cor_rh.fv_core.res.nc
-          filename_trcr: 20180415.000000.cor_rh.fv_tracer.res.nc
-          filename_sfcd: 20180415.000000.cor_rh.sfc_data.nc
-          filename_sfcw: 20180415.000000.cor_rh.fv_srf_wnd.res.nc
-          filename_cplr: 20180415.000000.cor_rh.coupler.res
-          date: 2018-04-15T00:00:00Z
+    saber central block:
+      saber block name: BUMP_NICAS
+      read:
+        io:
+          data directory: Data/staticb_aero
+          files prefix: nicas_aero
+          overriding universe radius file: cor_aero_universe_radius
+        drivers:
+          multivariate strategy: univariate
+          read universe radius: true
+          read local nicas: true
+    saber outer blocks:
     - saber block name: StdDev
-      input variables: *control_vars
-      output variables: *control_vars
-      file:
-        datetime: 2018-04-15T00:00:00Z
-        set datetime on read: true
-        filetype: fms restart
-        psinfile: true
-        datapath: Data/staticb_aero/
-        filename_core: 20180415.000000.stddev.fv_core.res.nc
-        filename_trcr: 20180415.000000.stddev.fv_tracer.res.nc
-        filename_sfcd: 20180415.000000.stddev.sfc_data.nc
-        filename_sfcw: 20180415.000000.stddev.fv_srf_wnd.res.nc
-        filename_cplr: 20180415.000000.stddev.coupler.res
-        date: 2018-04-15T00:00:00Z
+      read:
+        model file:
+          datetime: 2018-04-15T00:00:00Z
+          set datetime on read: true
+          filetype: fms restart
+          psinfile: true
+          datapath: Data/staticb_aero/
+          filename_core: 20180415.000000.stddev.fv_core.res.nc
+          filename_trcr: 20180415.000000.stddev.fv_tracer.res.nc
+          filename_sfcd: 20180415.000000.stddev.sfc_data.nc
+          filename_sfcw: 20180415.000000.stddev.fv_srf_wnd.res.nc
+          filename_cplr: 20180415.000000.stddev.coupler.res
+          field io names: *field_io_names
   observations:
     observers:
     - obs space:
@@ -75,16 +107,19 @@ cost function:
         obsdatain:
           engine:
             type: H5File
-            obsfile: Data/obs/testinput_tier_1/aod_viirs_obs_2018041500_sf6.nc4
+            obsfile: Data/obs/testinput_tier_1/aod_viirs_npp_obs_2018041500.nc4
         obsdataout:
           engine:
             type: H5File
-            obsfile: Data/hofx/aod_viirs_3dvar_gfs_aero_2018041500_sf6.nc4
-        simulated variables: [aerosol_optical_depth]
+            obsfile: Data/hofx/aod_viirs_npp_3dvar_gfs_aero_2018041500.nc4
+        simulated variables:
+        - aerosolOpticalDepth
         channels: 4
       obs operator:
         name: AodCRTM
-        Absorbers: [H2O,O3]
+        Absorbers:
+        - H2O
+        - O3
         obs options:
           Sensor_ID: v.viirs-m_npp
           EndianType: little_endian
@@ -92,42 +127,85 @@ cost function:
           AerosolOption: aerosols_gocart_default
       obs error:
         covariance model: diagonal
+      obs filters:
+      - filter: PreQC
+        maxvalue: 1
+      - filter: Domain Check
+        where:
+        - variable:
+            name: latitude@MetaData
+          minvalue: -60
+          maxvalue: 60
+      - filter: Bounds Check
+        filter variables:
+        - name: aerosolOpticalDepth
+          channels: 4
+        minvalue: 0
+        maxvalue: 4.9
+        action:
+          name: reject
+      - filter: PreQC
+        maxvalue: 0
+        action:
+          name: inflate error
+          inflation factor: 2.0
+      - filter: Background Check
+        channels: 4
+        threshold: 3.0
+        action:
+          name: inflate error
+          inflation factor: 3.0
+      obs bias:
+        input file: Data/obs/testinput_tier_1/VIIRS_npp_bias_coeff.nc4
+        output file: Data/analysis/VIIRS_npp_bias_coeff.nc4
+        variational bc:
+          predictors:
+          - name: constant
+        covariance:
+          minimal required obs number: 20
+          variance range:
+          - 1.0e-6
+          - 10.0
+          step size: 0.0001
+          largest analysis variance: 10000.0
+          prior:
+            input file: Data/obs/testinput_tier_1/VIIRS_npp_bias_error.nc4
+            inflation:
+              ratio: 1.1
+              ratio for small dataset: 2.0
+          output file: Data/analysis/VIIRS_npp_bias_error.nc4
 variational:
   minimizer:
-    algorithm: DRIPCG
+    algorithm: DRPCG
   iterations:
   - ninner: 10
     gradient norm reduction: 1e-10
     test: on
     geometry:
-      akbk: Data/fv3files/akbk64.nc4
-      layout: [1,2]
+      akbk: Data/inputs/fv3files/akbk64.nc4
+      layout:
+      - 1
+      - 2
       npx: 13
       npy: 13
       npz: 64
-      field metadata override: Data/fieldmetadata/gfs-aerosol.yaml
-    diagnostics:
-      departures: ombg
   - ninner: 5
     gradient norm reduction: 1e-10
     test: on
     geometry:
-      akbk: Data/fv3files/akbk64.nc4
-      layout: [1,2]
+      akbk: Data/inputs/fv3files/akbk64.nc4
+      layout:
+      - 1
+      - 2
       npx: 13
       npy: 13
       npz: 64
-      field metadata override: Data/fieldmetadata/gfs-aerosol.yaml
-    diagnostics:
-      departures: ombg
-final:
-  diagnostics:
-    departures: oman
 output:
   filetype: fms restart
   datapath: Data/analysis/
   prefix: 3dvar-1-gfs
   frequency: PT1H
+  field io names: *field_io_names
 test:
   reference filename: testoutput/3dvar_gfs_aero.ref
   float absolute tolerance: 1.0e-8

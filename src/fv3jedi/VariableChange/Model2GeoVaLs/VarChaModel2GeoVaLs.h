@@ -13,7 +13,6 @@
 
 #include "eckit/config/Configuration.h"
 #include "fv3jedi/Geometry/Geometry.h"
-#include "fv3jedi/Utilities/Traits.h"
 #include "fv3jedi/VariableChange/Base/VariableChangeBase.h"
 #include "VarChaModel2GeoVaLs.interface.h"
 

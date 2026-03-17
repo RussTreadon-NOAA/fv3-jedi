@@ -235,6 +235,16 @@ void IOStructuredGrid::write(const Increment & dx, const eckit::LocalConfigurati
 
 // -------------------------------------------------------------------------------------------------
 
+static inline void nc_rc(const int return_code, const std::string & operation) {
+  // If there was a failure of the netCDF operation, abort with the error message
+  if (return_code) {
+    ABORT("IOStructuredGrid netCDF operation \'" + operation + "\' failed with error: "
+          + nc_strerror(return_code));
+  }
+}
+
+// -------------------------------------------------------------------------------------------------
+
 void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
                                              const util::DateTime & time,
                                              const eckit::LocalConfiguration & ioNames,
@@ -275,7 +285,7 @@ void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
   // Format the datetime string
   pathFile = time.formatString(pathFile);
 
-  // Replace member number (ensemble applications)
+  // Replace member number (ensemble applciaitons)
   util::stringfunctions::swapNameMember(params_.toConfiguration(), pathFile);
 
   // Create a file to write fields into
@@ -436,7 +446,7 @@ void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
   nc_rc(nc_put_att_int(fileId, NC_GLOBAL, "im", NC_INT, 1, &nLon),
           "nc_put_att_int (im)");
   nc_rc(nc_put_att_int(fileId, NC_GLOBAL, "jm", NC_INT, 1, &nLat),
-          "nc_put_att_int (jm)");
+          "nc_put_att_int (im)");
 
   // End definition mode
   // -------------------

@@ -1,29 +1,75 @@
 linear variable change tests:
 - linear variable change:
     linear variable change name: Control2Analysis
-    input variables: [psi,chi,tv,ps,rh,qi,ql,o3]
-    output variables: [ud,vd,t,ps,q,qi,ql,o3]
-  testinverse: 1
+    input variables:
+    - air_horizontal_streamfunction
+    - air_horizontal_velocity_potential
+    - air_temperature
+    - air_pressure_at_surface
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - cloud_liquid_ice
+    - cloud_liquid_water
+    - volume_mixing_ratio_of_o3
+    output variables:
+    - eastward_wind
+    - northward_wind
+    - air_temperature
+    - air_pressure_at_surface
+    - water_vapor_mixing_ratio_wrt_moist_air
+    - cloud_liquid_ice
+    - cloud_liquid_water
+    - volume_mixing_ratio_of_o3
+  test inverse: false
   tolerance inverse: 1000
 - linear variable change:
-    linear variable change name: Analysis2Model
-    input variables: [ua,va,t,ps,q,qi,ql,o3]
-    output variables: [u,v,t,delp,q,qi,ql,o3]
-  testinverse: 1
+    linear variable change name: Model2GeoVaLs
+    input variables:
+    - air_pressure_thickness
+    - air_temperature
+    - water_vapor_mixing_ratio_wrt_moist_air
+    output variables:
+    - air_pressure_at_surface
+    - virtual_temperature
+  test inverse: false
   tolerance inverse: 1000
 geometry:
   fms initialization:
     namelist filename: Data/fv3files/fmsmpp.nml
     field table filename: Data/fv3files/field_table_gmao
-  akbk: Data/fv3files/akbk72.nc4
+  akbk: Data/inputs/fv3files/akbk72.nc4
   npx: 13
   npy: 13
   npz: 72
-  field metadata override: Data/fieldmetadata/geos.yaml
 background:
   datetime: 2020-12-14T21:00:00Z
   filetype: cube sphere history
   provider: geos
   datapath: Data/inputs/geos_c12
-  filenames: [geos.bkg.20201214_210000z.nc4, geos.bkg.crtmsrf.20201214_210000z.nc4]
-  state variables: [u,v,ua,va,t,delp,q,qi,ql,o3ppmv,phis]
+  filenames:
+  - geos.bkg.20201214_210000z.nc4
+  - geos.bkg.crtmsrf.20201214_210000z.nc4
+  state variables:
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_ice
+  - cloud_liquid_water
+  - mole_fraction_of_ozone_in_air
+  - geopotential_height_times_gravity_at_surface
+  field io names: &field_io_names
+    air_horizontal_streamfunction: psi
+    air_horizontal_velocity_potential: chi
+    air_temperature: t
+    air_pressure_at_surface: ps
+    water_vapor_mixing_ratio_wrt_moist_air: q
+    cloud_liquid_ice: qi
+    cloud_liquid_water: ql
+    volume_mixing_ratio_of_o3: o3
+    eastward_wind: ua
+    northward_wind: va
+    air_pressure_thickness: delp
+    virtual_temperature: tv
+    mole_fraction_of_ozone_in_air: o3ppmv
+    geopotential_height_times_gravity_at_surface: phis

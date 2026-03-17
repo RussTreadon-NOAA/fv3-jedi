@@ -1,0 +1,120 @@
+update geometry:
+  fms initialization:
+    namelist filename: Data/fv3files/input_gfs_c12.nml
+    field table filename: Data/fv3files/field_table_gmao
+  akbk: Data/inputs/fv3files/akbk127.nc4
+  npx: 13
+  npy: 13
+  npz: 127
+hybrid linear model:
+  simple linear model:
+    linear model:
+      name: FV3JEDITLM
+      namelist filename: Data/fv3files/input_gfs_c12.nml
+      linear model namelist filename: Data/fv3files/inputpert_4dvar.nml
+      tstep: PT1H
+      lm_do_dyn: 1
+      lm_do_trb: 0
+      lm_do_mst: 0
+  update tstep: PT3H
+  variables:
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_water
+  - cloud_liquid_ice
+  - ozone_mass_mixing_ratio
+  coefficients:
+    output:
+      base filepath: Data/hybrid_linear_model_coeffs
+      one file per task: true
+    update variables:
+    - eastward_wind
+    - northward_wind
+    influence region size: 3
+    time window:
+      begin: 2020-12-14T21:00:00Z
+      length: PT6H
+    calculator:
+    ensemble:
+      model:
+        name: FV3LM
+        datapath: Data/inputs/gfs_c12/bkg/
+        filename_core: 20201214.210000.fv_core.res.nc
+        filename_core_out: checkpoint.gen)hybrid_linear_model_coeffs.fv_core.res.nc
+        datapath_out: Data/forecast
+        use internal namelist: true
+        tstep: PT1H
+        lm_do_dyn: 1
+        lm_do_trb: 0
+        lm_do_mst: 0
+      model geometry:
+        fms initialization:
+          namelist filename: Data/fv3files/input_gfs_c12.nml
+          field table filename: Data/fv3files/field_table_gmao
+        akbk: Data/inputs/fv3files/akbk127.nc4
+        npx: 13
+        npy: 13
+        npz: 127
+      nonlinear control:
+        datetime: 2020-12-14T21:00:00Z
+        filetype: fms restart
+        datapath: Data/inputs/gfs_c12/bkg/
+        filename_core: 20201214.210000.fv_core.res.nc
+        filename_trcr: 20201214.210000.fv_tracer.res.nc
+        filename_sfcd: 20201214.210000.sfc_data.nc
+        filename_sfcw: 20201214.210000.fv_srf_wnd.res.nc
+        filename_cplr: 20201214.210000.coupler.res
+        state variables: &bgvars
+        - eastward_wind
+        - northward_wind
+        - air_temperature
+        - air_pressure_thickness
+        - water_vapor_mixing_ratio_wrt_moist_air
+        - cloud_liquid_water
+        - cloud_liquid_ice
+        - ozone_mass_mixing_ratio
+        - geopotential_height_times_gravity_at_surface
+        field io names: &field_io_names
+          eastward_wind: ua
+          northward_wind: va
+          air_temperature: T
+          air_pressure_thickness: delp
+          water_vapor_mixing_ratio_wrt_moist_air: sphum
+          cloud_liquid_water: liq_wat
+          cloud_liquid_ice: ice_wat
+          ozone_mass_mixing_ratio: o3mr
+          geopotential_height_times_gravity_at_surface: phis
+      nonlinear ensemble:
+        read:
+          members from template:
+            template:
+              datetime: 2020-12-14T21:00:00Z
+              filetype: fms restart
+              state variables: *bgvars
+              datapath: Data/inputs/gfs_c12/mem%mem%/
+              filename_core: 20201214.210000.fv_core.res.nc
+              filename_trcr: 20201214.210000.fv_tracer.res.nc
+              filename_sfcd: 20201214.210000.sfc_data.nc
+              filename_sfcw: 20201214.210000.fv_srf_wnd.res.nc
+              filename_cplr: 20201214.210000.coupler.res
+              field io names: *field_io_names
+            pattern: '%mem%'
+            nmembers: 8
+            zero padding: 3
+  name: HTLM
+test:
+  variables:
+  - eastward_wind
+  - northward_wind
+  - air_temperature
+  - air_pressure_thickness
+  - water_vapor_mixing_ratio_wrt_moist_air
+  - cloud_liquid_water
+  - cloud_liquid_ice
+  - ozone_mass_mixing_ratio
+  reference filename: testoutput/gen_hybrid_linear_model_coeffs.ref
+  test output filename: testoutput/gen_hybrid_linear_model_coeffs.test.out
+  float relative tolerance: 1.0e-3

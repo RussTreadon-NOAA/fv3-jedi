@@ -10,7 +10,7 @@ module fv3jedi_geom_iter_mod
   use kinds
   use atlas_module, only: atlas_field
   use fv3jedi_geom_mod, only: fv3jedi_geom, getVerticalCoord
-  use fv3jedi_constants_mod, only: rad2deg
+  use fv3jedi_constants_mod, only: constant
 
 ! oops
   use missing_values_mod
@@ -23,6 +23,7 @@ module fv3jedi_geom_iter_mod
   public :: fv3jedi_geom_iter_setup, fv3jedi_geom_iter_clone, fv3jedi_geom_iter_equals
   public :: fv3jedi_geom_iter_current, fv3jedi_geom_iter_next
   public :: fv3jedi_geom_iter_orography
+  public :: fv3jedi_geom_iter_nominal_surface_pressure
 
   type :: fv3jedi_geom_iter
     type(fv3jedi_geom), pointer :: geom => null() !< Geometry
@@ -125,6 +126,22 @@ contains
     real(kind_real)                           :: psurf
     real(kind_real), dimension(self%geom%npz) :: prs
 
+    type(atlas_field) :: nsp_field
+    real(kind=kind_real), pointer :: nsp_ptr(:,:)
+    integer :: nsp_index
+    logical :: has_nsp
+
+    ! Get pointer to nominal_surface_pressure data
+    ! Note: data in the atlas::FieldSet is stored as unstructured 1D array (owned points first,
+    ! halo points second). To access the nominal_surface_pressure value, we'll compute the 1D index into the
+    ! owned points corresponding to the current iterator. (Alternatively, we could reshape the
+    ! array, but this would require an allocation.)
+    has_nsp = self%geom%geometry_fields%has_field("nominal_surface_pressure")
+    if (has_nsp) then
+       nsp_field = self%geom%geometry_fields%field('nominal_surface_pressure')
+       call nsp_field%data(nsp_ptr)
+    endif
+
     ! Check iindex/jindex
     if (self%iindex == -1 .AND. self%jindex == -1) then
       ! special case of {-1,-1} means end of the grid
@@ -141,8 +158,8 @@ contains
     endif
 
     !convert to degrees from radians
-    lat = rad2deg*lat
-    lon = rad2deg*lon
+    lat = constant('rad2deg')*lat
+    lon = constant('rad2deg')*lon
 
     ! check kindex
     select case(self%geom%iterator_dimension)
@@ -150,7 +167,13 @@ contains
 !     vCoord = missing_value(0.0_kind_real)
       vCoord = -99999
     case (3) ! 3-d iterator
-      psurf = 0.0_kind_real
+      if (has_nsp) then
+        nsp_index = (self%iindex - self%geom%isc + 1) &
+                    + (self%jindex - self%geom%jsc) * (self%geom%iec - self%geom%isc + 1)
+        psurf = nsp_ptr(1, nsp_index)
+      else
+        psurf = 100000.0_kind_real
+      endif
       call getVerticalCoord(self%geom, prs, self%geom%npz, psurf)
       if (self%kindex == -1) then
         ! special case of {-1} means end of the grid
@@ -168,6 +191,8 @@ contains
     case default
       call abor1_ftn('fv3jedi_geom_iter_current: unknown geom%iterator_dimension')
     end select
+
+    call nsp_field%final()
 
   end subroutine fv3jedi_geom_iter_current
 
@@ -188,7 +213,7 @@ contains
     ! halo points second). To access the orography value, we'll compute the 1D index into the
     ! owned points corresponding to the current iterator. (Alternatively, we could reshape the
     ! array, but this would require an allocation.)
-    orog_field = self%geom%extra_fields%field('filtered_orography')
+    orog_field = self%geom%geometry_fields%field('filtered_orography')
     call orog_field%data(orog_ptr)
 
     ! Check iindex/jindex
@@ -201,11 +226,51 @@ contains
       call abor1_ftn('fv3jedi_geom_iter_orography: iterator out of bounds')
     else
       ! inside of the grid
-      orog_index = self%iindex + (self%jindex - 1) * (self%geom%iec-self%geom%isc+1)
+      orog_index = (self%iindex - self%geom%isc + 1) &
+                   + (self%jindex - self%geom%jsc) * (self%geom%iec - self%geom%isc + 1)
       oro = orog_ptr(1, orog_index)
     endif
+    call orog_field%final()
 
   end subroutine fv3jedi_geom_iter_orography
+
+  ! ------------------------------------------------------------------------------
+  !> Get geometry iterator current lat/lon
+  subroutine fv3jedi_geom_iter_nominal_surface_pressure(self, nsp)
+
+    ! Passed variables
+    type(fv3jedi_geom_iter), intent( in) :: self !< Geometry iterator
+    real(kind_real),    intent(out) :: nsp  !< Orography
+
+    type(atlas_field) :: nsp_field
+    real(kind=kind_real), pointer :: nsp_ptr(:,:)
+    integer :: nsp_index
+
+    ! Get pointer to nominal_surface_pressure data
+    ! Note: data in the atlas::FieldSet is stored as unstructured 1D array (owned points first,
+    ! halo points second). To access the nominal_surface_pressure value, we'll compute the 1D index into the
+    ! owned points corresponding to the current iterator. (Alternatively, we could reshape the
+    ! array, but this would require an allocation.)
+    nsp_field = self%geom%geometry_fields%field('nominal_surface_pressure')
+    call nsp_field%data(nsp_ptr)
+
+    ! Check iindex/jindex
+    if (self%iindex == -1 .AND. self%jindex == -1) then
+      ! special case of {-1,-1} means end of the grid
+      nsp = nsp_ptr(1, self%geom%ngrid)
+    elseif (self%iindex < self%geom%isc .OR. self%iindex > self%geom%iec .OR. &
+            self%jindex < self%geom%jsc .OR. self%jindex > self%geom%jec) then
+      ! outside of the grid
+      call abor1_ftn('fv3jedi_geom_iter_nominal_surface_pressure: iterator out of bounds')
+    else
+      ! inside of the grid
+      nsp_index = (self%iindex - self%geom%isc + 1) &
+                  + (self%jindex - self%geom%jsc) * (self%geom%iec - self%geom%isc + 1)
+      nsp = nsp_ptr(1, nsp_index)
+    endif
+    call nsp_field%final()
+
+  end subroutine fv3jedi_geom_iter_nominal_surface_pressure
 
   ! ------------------------------------------------------------------------------
   !> Update geometry iterator to next point

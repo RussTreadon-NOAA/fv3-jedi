@@ -1,0 +1,56 @@
+input geometry:
+  fms initialization:
+    namelist filename: Data/fv3files/fmsmpp.nml
+    field table filename: Data/fv3files/field_table_gfdl
+  akbk: Data/inputs/fv3files/akbk72.nc4
+  npx: 13
+  npy: 13
+  npz: 72
+output geometry:
+  akbk: Data/inputs/fv3files/akbk72.nc4
+  npx: 13
+  npy: 13
+  npz: 72
+variable change:
+  variable change name: Model2GeoVaLs
+  input variables: &inputvars
+  - air_pressure_at_surface
+  - air_temperature
+  - water_vapor_mixing_ratio_wrt_moist_air
+  output variables:
+  - air_pressure_thickness
+  - air_pressure_levels
+  - ln_air_pressure_at_interface
+  - air_pressure_to_kappa
+  - air_pressure
+  - air_potential_temperature
+  - virtual_temperature
+states:
+- input:
+    datetime: 2020-12-14T21:00:00Z
+    state variables: *inputvars
+    filetype: cube sphere history
+    provider: geos
+    datapath: Data/inputs/geos_c12
+    filenames:
+    - geos.bkg.20201214_210000z.nc4
+    field io names: &field_io_names
+      air_pressure_at_surface: ps
+      air_temperature: t
+      water_vapor_mixing_ratio_wrt_moist_air: q
+      air_pressure_thickness: delp
+      air_pressure_levels: pe
+      ln_air_pressure_at_interface: lnpe
+      air_pressure_to_kappa: pkz
+      air_pressure: p
+      air_potential_temperature: pt
+      virtual_temperature: tv
+  output:
+   filetype: cube sphere history
+   provider: geos
+   datapath: Data/
+   filename: geovals_vader.geos.%yyyy%mm%dd_%hh%MM%ssz.nc4
+   field io names: *field_io_names
+test:
+  reference filename: testoutput/convertstate_geos_vader_for_model2geovals.ref
+  test output filename: testoutput/convertstate_geos_vader_for_model2geovals.test.out

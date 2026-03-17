@@ -9,13 +9,12 @@ module wind_vt_mod
 use mpi
 use netcdf
 
-use fv3jedi_constants_mod, only: pi, rad2deg
+use fv3jedi_constants_mod, only: constant
 use fv3jedi_geom_mod,  only: fv3jedi_geom
 use fv3jedi_kinds_mod, only: kind_real
 use fv3jedi_communication_mod, only: gather_field, scatter_field
 use fv3jedi_netcdf_utils_mod, only: nccheck
 
-use fv_mp_mod, only: fill_corners
 use fv_mp_adm_mod, only: mpp_update_domains_adm
 use mpp_domains_mod, only: mpp_update_domains, dgrid_ne
 use mpp_domains_mod, only: mpp_get_boundary, mpp_get_boundary_ad
@@ -82,6 +81,7 @@ subroutine sfc_10m_winds(geom,usrf,vsrf,f10r,spd10m,dir10m)
                                                               1.0_kind_real,  2.0_kind_real, &
                                                               1.0_kind_real, -1.0_kind_real, &
                                                               1.0_kind_real, -1.0_kind_real /), (/4, 2/))
+ real(kind=kind_real) :: pi, rad2deg
 
  !In GSI these calculations are done after interpolation to obs location
 
@@ -89,6 +89,10 @@ subroutine sfc_10m_winds(geom,usrf,vsrf,f10r,spd10m,dir10m)
  iec = geom%iec
  jsc = geom%jsc
  jec = geom%jec
+
+! Constants
+ pi = constant('pi')
+ rad2deg = constant('rad2deg')
 
  !10m wind speed
  spd10m(isc:iec,jsc:jec) = f10r(isc:iec,jsc:jec)*sqrt( usrf(isc:iec,jsc:jec)*usrf(isc:iec,jsc:jec) + &
@@ -1149,8 +1153,8 @@ jm2 = (npy-1)/2
 uatemp(:,:,:) = 0.0
 vatemp(:,:,:) = 0.0
 
-uatemp(is:ie,js:je,:) = ua
-vatemp(is:ie,js:je,:) = va
+uatemp(is:ie,js:je,:) = ua(is:ie,js:je,:)
+vatemp(is:ie,js:je,:) = va(is:ie,js:je,:)
 
 call mpp_update_domains(uatemp, geom%domain, complete=.true.)
 call mpp_update_domains(vatemp, geom%domain, complete=.true.)
@@ -2418,7 +2422,6 @@ do i=isd+1,ied
 enddo
 
 call mpp_update_domains( ud, vd, geom%domain, gridtype=DGRID_NE, complete=.true.)
-!if (.not. geom%bounded_domain) call fill_corners(ud, vd, geom%npx, geom%npy, VECTOR=.true., DGRID=.true.)
 
 end subroutine acs_to_d_domain_level
 

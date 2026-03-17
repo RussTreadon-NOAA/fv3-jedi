@@ -19,10 +19,11 @@ use fckit_configuration_module, only: fckit_configuration
 use fckit_log_module, only : log
 
 ! fv3jedi uses
-use fv3jedi_field_mod,           only: fv3jedi_field
+use fv3jedi_field_mod,           only: fv3jedi_field, hasfield, get_field
 use fv3jedi_fields_mod,          only: fv3jedi_fields
 use fv3jedi_geom_mod,            only: fv3jedi_geom
 use fv3jedi_kinds_mod,           only: kind_real
+use wind_vt_mod,                 only: a_to_d
 
 implicit none
 private
@@ -41,11 +42,12 @@ contains
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine add_increment(self, increment)
+subroutine add_increment(self, increment_fields, geom)
 
 ! Arguments
 class(fv3jedi_state), intent(inout) :: self
-type(fv3jedi_field),  intent(in)    :: increment(:)
+type(fv3jedi_field),  intent(in)    :: increment_fields(:)
+type(fv3jedi_geom),   intent(in)    :: geom
 
 ! Locals
 integer :: f, i, j, k
@@ -53,19 +55,17 @@ logical :: found_neg
 type(fv3jedi_field), pointer :: state
 
 ! Loop over the increment fields and add them to the state
-do f = 1, size(increment)
+do f = 1, size(increment_fields)
 
-  !Get pointer to state
-  call self%get_field(increment(f)%short_name, state)
+  ! Get pointer to state
+  call self%get_field(increment_fields(f)%long_name, state)
 
-  !Add increment to state
-  state%array = state%array + increment(f)%array
+  ! Add increment to state
+  state%array = state%array + increment_fields(f)%array
 
   ! Disallow tracers to become negative
   if (state%tracer) then
-
     found_neg = .false.
-
     do k = 1, state%npz
       do j = state%jsc, state%jec
         do i = state%isc, state%iec
@@ -77,13 +77,13 @@ do f = 1, size(increment)
       enddo
     enddo
 
-    !Print message warning about negative tracer removal
-    if (found_neg .and. self%f_comm%rank() == 0) print*, &
-      'fv3jedi_state_mod.add_incr: Removed negative values for '//trim(state%long_name)
-
+    ! Print message warning about negative tracer removal
+    if (found_neg .and. self%f_comm%rank() == 0) then
+      print*, 'fv3jedi_state_mod.add_incr: Removed negative values for '//trim(state%long_name)
+    end if
   endif
 
-  !Nullify pointer
+  ! Nullify pointer
   nullify(state)
 
 enddo
@@ -155,17 +155,17 @@ if (geom%f_comm%rank() == 0) then
 endif
 
 ! Pointers to fields
-call self%get_field('ua'     , ua  )
-call self%get_field('va'     , va  )
-call self%get_field('t'      , t   )
-call self%get_field('delp'   , delp)
-call self%get_field('p'      , p   )
-call self%get_field('sphum'  , q   )
-call self%get_field('ice_wat', qi  )
-call self%get_field('liq_wat', ql  )
-call self%get_field('phis'   , phis)
-call self%get_field('o3mr'   , o3  )
-call self%get_field('w'      , w   )
+call self%get_field('eastward_wind',                                ua  )
+call self%get_field('northward_wind',                               va  )
+call self%get_field('air_temperature',                              t   )
+call self%get_field('air_pressure_thickness',                       delp)
+call self%get_field('air_pressure',                                 p   )
+call self%get_field('water_vapor_mixing_ratio_wrt_moist_air',       q   )
+call self%get_field('cloud_liquid_ice',                             qi  )
+call self%get_field('cloud_liquid_water',                           ql  )
+call self%get_field('geopotential_height_times_gravity_at_surface', phis)
+call self%get_field('ozone_mass_mixing_ratio',                      o3  )
+call self%get_field('upward_air_velocity',                          w   )
 
 ! Initialize fields
 ua   = 0.0_kind_real

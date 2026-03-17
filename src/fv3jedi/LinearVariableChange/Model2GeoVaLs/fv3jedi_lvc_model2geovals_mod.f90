@@ -12,7 +12,7 @@ use fckit_log_module,           only: fckit_log
 
 use datetime_mod
 
-use fv3jedi_constants_mod, only: constoz
+use fv3jedi_constants_mod, only: constant
 use fv3jedi_geom_mod,      only: fv3jedi_geom
 use fv3jedi_fieldfail_mod, only: field_fail
 use fv3jedi_field_mod,     only: copy_subset, field_clen
@@ -20,6 +20,7 @@ use fv3jedi_increment_mod, only: fv3jedi_increment
 use fv3jedi_kinds_mod,     only: kind_real
 use fv3jedi_state_mod,     only: fv3jedi_state
 
+use radii_vt_mod
 use height_vt_mod
 use moisture_vt_mod
 use pressure_vt_mod
@@ -34,9 +35,23 @@ public :: fv3jedi_lvc_model2geovals
 
 type :: fv3jedi_lvc_model2geovals
   integer :: isc, iec, jsc, jec, npz
-  real(kind=kind_real), allocatable :: t (:,:,:)
-  real(kind=kind_real), allocatable :: q (:,:,:)
-  real(kind=kind_real), allocatable :: o3(:,:,:)
+  real(kind=kind_real), allocatable ::      t(:,:,:)
+  real(kind=kind_real), allocatable ::      q(:,:,:)
+  real(kind=kind_real), allocatable ::     o3(:,:,:)
+  real(kind=kind_real), allocatable ::     ql(:,:,:)
+  real(kind=kind_real), allocatable ::     qi(:,:,:)
+  real(kind=kind_real), allocatable ::     qr(:,:,:)
+  real(kind=kind_real), allocatable ::     qs(:,:,:)
+  real(kind=kind_real), allocatable ::     qg(:,:,:)
+  real(kind=kind_real), allocatable ::   delp(:,:,:)
+  real(kind=kind_real), allocatable ::  slmsk(:,:,:)
+  real(kind=kind_real), allocatable :: sheleg(:,:,:)
+  real(kind=kind_real), allocatable :: frseaice(:,:,:)
+  real(kind=kind_real), allocatable :: frland(:,:,:)
+  real(kind=kind_real), allocatable :: frsnow(:,:,:)
+  real(kind=kind_real), allocatable ::frocean(:,:,:)
+  real(kind=kind_real), allocatable :: frlake(:,:,:)
+  real(kind=kind_real), allocatable ::     ts(:,:,:)
   contains
     procedure, public :: create
     procedure, public :: delete
@@ -58,6 +73,13 @@ type(fv3jedi_state),              intent(in)    :: bg
 type(fv3jedi_state),              intent(in)    :: fg
 type(fckit_configuration),        intent(in)    :: dummyconf
 
+integer :: i,j
+logical :: have_fractions,have_slmsk,have_ts
+real(kind=kind_real), allocatable :: local_swe(:,:,:)
+
+!Locals
+real(kind=kind_real), parameter :: minswe = 1.0_kind_real / 10.0_kind_real
+
 !!! DO NOT USE CONF !!!
 
 ! Grid convenience
@@ -67,11 +89,98 @@ self%jsc = geom%jsc
 self%jec = geom%jec
 self%npz = geom%npz
 
-! Trajectory fields
-if (bg%has_field('t'     )) call bg%get_field('t'     , self%t )
-if (bg%has_field('sphum' )) call bg%get_field('sphum' , self%q )
-if (bg%has_field('o3mr'  )) call bg%get_field('o3mr'  , self%o3)
-if (bg%has_field('o3ppmv')) call bg%get_field('o3ppmv', self%o3)
+! Trajectory fields (OK if they do not exist as later checks will assert)
+call bg%get_field('air_temperature', self%t, .true.)
+call bg%get_field('water_vapor_mixing_ratio_wrt_moist_air', self%q, .true.)
+call bg%get_field('ozone_mass_mixing_ratio', self%o3, .true.)
+call bg%get_field('mole_fraction_of_ozone_in_air', self%o3, .true.)
+call bg%get_field('air_pressure_thickness', self%delp, .true.)
+call bg%get_field('cloud_liquid_water', self%ql, .true.)
+call bg%get_field('cloud_liquid_ice', self%qi, .true.)
+call bg%get_field('rain_water', self%qr, .true.)
+call bg%get_field('snow_water', self%qs, .true.)
+call bg%get_field('graupel', self%qg, .true.)
+call bg%get_field('fraction_of_ice', self%frseaice, .true.)
+call bg%get_field('fraction_of_snow', self%frsnow, .true.)
+call bg%get_field('fraction_of_land', self%frland, .true.)
+call bg%get_field('fraction_of_lake', self%frlake, .true.)
+call bg%get_field('fraction_of_ocean', self%frocean, .true.)
+call bg%get_field('slmsk', self%slmsk, .true.)
+call bg%get_field('sheleg', self%sheleg, .true.)
+
+have_ts=.false.
+if (bg%has_field('ts')) then
+   call bg%get_field('ts', self%ts)
+   have_ts=.true.
+else if (bg%has_field('tsea')) then
+   call bg%get_field('tsea', self%ts)
+   have_ts=.true.
+endif
+
+have_fractions=allocated(self%frlake) .and. allocated(self%frocean) .and. &
+               allocated(self%frseaice)
+
+! Land sea mask
+! -------------
+have_slmsk = .false.
+if (allocated(self%slmsk)) then
+  have_slmsk = .true.
+elseif ( have_fractions .and. have_ts ) then
+
+  allocate(self%slmsk(self%isc:self%iec,self%jsc:self%jec,1))
+  self%slmsk = 1.0_kind_real !Land
+  do j = self%jsc,self%jec
+    do i = self%isc,self%iec
+      if ( self%frocean(i,j,1) + self%frlake(i,j,1) >= 0.6_kind_real) then
+        self%slmsk(i,j,1) = 0.0_kind_real ! Water
+      endif
+      if ( self%slmsk(i,j,1) == 0.0_kind_real .and. self%frseaice(i,j,1) > 0.5_kind_real) then
+        self%slmsk(i,j,1) = 2.0_kind_real ! Ice
+      endif
+      if ( self%slmsk(i,j,1) == 0.0_kind_real .and. self%ts(i,j,1) < 271.4_kind_real ) then
+        self%slmsk(i,j,1) = 2.0_kind_real ! Ice
+      endif
+    enddo
+  enddo
+  have_slmsk = .true.
+endif
+
+! Land sea mask
+! -------------
+if (have_slmsk) then
+
+  if(.not.allocated(self%frocean)) allocate(self%frocean(self%isc:self%iec,self%jsc:self%jec,1))
+  if(.not.allocated(self%frland)) allocate(self%frland(self%isc:self%iec,self%jsc:self%jec,1))
+  if(.not.allocated(self%frseaice)) allocate(self%frseaice(self%isc:self%iec,self%jsc:self%jec,1))
+  if(.not.allocated(self%frsnow)) allocate(self%frsnow(self%isc:self%iec,self%jsc:self%jec,1))
+  allocate(local_swe(geom%isc:geom%iec,geom%jsc:geom%jec,1))
+
+  ! Potential for missing values in snow water equivalent (if missing set to 0.0)
+  local_swe = self%sheleg  ! SWE is named 'sheleg' in backgrounds
+  where (abs(local_swe) > 10.0e10_kind_real) local_swe = 0.0_kind_real
+
+  ! Note: The GFS slmsk has values {0,1,2} denoting {sea,land,ice}.
+  !       Locally within this function, we also use an additional value (3) to denote snow.
+  self%slmsk = nint(self%slmsk)
+  where (self%slmsk >= 1 .and. local_swe > minswe) self%slmsk = 3
+
+  do j = self%jsc,self%jec
+    do i = self%isc,self%iec
+      if ( self%slmsk(i,j,1) == 0.0_kind_real) then
+        self%frocean(i,j,1) = 1.0_kind_real
+      elseif ( self%slmsk(i,j,1) == 1.0_kind_real) then
+        self%frland(i,j,1) = 1.0_kind_real
+      elseif ( self%slmsk(i,j,1) == 2.0_kind_real) then
+        self%frseaice(i,j,1) = 1.0_kind_real
+      elseif ( self%slmsk(i,j,1) == 3.0_kind_real) then
+        self%frsnow(i,j,1) = 1.0_kind_real
+      endif
+    enddo
+  enddo
+
+  deallocate(local_swe)
+
+endif
 
 end subroutine create
 
@@ -81,9 +190,22 @@ subroutine delete(self)
 
 class(fv3jedi_lvc_model2geovals), intent(inout) :: self
 
-if (allocated(self%t )) deallocate(self%t )
-if (allocated(self%q )) deallocate(self%q )
-if (allocated(self%o3)) deallocate(self%o3)
+if (allocated(self%slmsk)) deallocate(self%slmsk)
+if (allocated(self%sheleg)) deallocate(self%sheleg)
+if (allocated(self%frocean)) deallocate(self%frocean  )
+if (allocated(self%frlake)) deallocate(self%frlake  )
+if (allocated(self%frland)) deallocate(self%frland  )
+if (allocated(self%frsnow)) deallocate(self%frsnow  )
+if (allocated(self%frseaice)) deallocate(self%frseaice  )
+if (allocated(self%qg  )) deallocate(self%qg  )
+if (allocated(self%qs  )) deallocate(self%qs  )
+if (allocated(self%qr  )) deallocate(self%qr  )
+if (allocated(self%qi  )) deallocate(self%qi  )
+if (allocated(self%ql  )) deallocate(self%ql  )
+if (allocated(self%delp)) deallocate(self%delp)
+if (allocated(self%o3  )) deallocate(self%o3  )
+if (allocated(self%q   )) deallocate(self%q   )
+if (allocated(self%t   )) deallocate(self%t   )
 
 end subroutine delete
 
@@ -105,8 +227,6 @@ real(kind=kind_real), pointer :: field_ptr(:,:,:)
 logical :: have_winds
 real(kind=kind_real), allocatable :: ua  (:,:,:)         !A-grid wind u component
 real(kind=kind_real), allocatable :: va  (:,:,:)         !A-grid wind v component
-real(kind=kind_real), pointer     :: ud  (:,:,:)         !D-grid wind u component
-real(kind=kind_real), pointer     :: vd  (:,:,:)         !D-grid wind v component
 
 !Virtual temperature
 logical :: have_tv
@@ -118,6 +238,16 @@ real(kind=kind_real), allocatable :: tv  (:,:,:)         !Virtual temperature
 logical :: have_qmr
 real(kind=kind_real), allocatable :: qmr (:,:,:)         !Humidity mixing ratio
 
+!Cloud mass content in atmospheric layers
+logical :: have_ql,have_qi,have_qr,have_qs,have_qg
+real(kind=kind_real), allocatable :: clwpath (:,:,:)     !Cloud liquid  water path
+real(kind=kind_real), allocatable :: ciwpath (:,:,:)     !Cloud ice     water path
+real(kind=kind_real), allocatable :: crwpath (:,:,:)     !Cloud rain    water path
+real(kind=kind_real), allocatable :: cswpath (:,:,:)     !Cloud snow    water path
+real(kind=kind_real), allocatable :: cgwpath (:,:,:)     !Cloud graupel water path
+
+real(kind=kind_real), allocatable :: cmxr (:,:,:)        !Cloud mixing ratio
+
 !Ozone mixing ratio
 logical :: have_o3
 real(kind=kind_real), allocatable :: o3mr  (:,:,:)       !Ozone mixing ratio
@@ -125,9 +255,17 @@ real(kind=kind_real), allocatable :: o3ppmv(:,:,:)       !Ozone ppmv
 
 !Surface pressure
 logical :: have_ps
-real(kind=kind_real), allocatable :: ps  (:,:,:)         !Surface pressure
+real(kind=kind_real), pointer     :: ps  (:,:,:)         !Surface pressure
 real(kind=kind_real), pointer     :: delp(:,:,:)         !Pressure thickness
 
+!Air pressure
+logical :: have_prs,have_pe
+real(kind=kind_real), allocatable :: prs (:,:,:)         !Air pressure (midlevs)
+real(kind=kind_real), allocatable :: pe  (:,:,:)         !Air pressure (edges)
+
+!Skin temperature
+logical :: have_tskin
+real(kind=kind_real), pointer     :: tskin(:,:,:)        !Skin temperature
 
 ! Identity part of the change of fields
 ! -------------------------------------
@@ -139,11 +277,11 @@ call copy_subset(dxm%fields, dxg%fields, fields_to_do_)
 nf2do = 0
 if (allocated(fields_to_do_)) nf2do = size(fields_to_do_)
 
-if (dxg%has_field('ua')) then
+if (dxg%has_field('eastward_wind')) then
   allocate(fields_to_do(nf2do+2))
   if (allocated(fields_to_do_)) fields_to_do(1:nf2do) = fields_to_do_
-  fields_to_do(nf2do+1) = 'ua'
-  fields_to_do(nf2do+2) = 'va'
+  fields_to_do(nf2do+1) = 'eastward_wind'
+  fields_to_do(nf2do+2) = 'northward_wind'
 else
   if (allocated(fields_to_do_)) then
     allocate(fields_to_do(nf2do))
@@ -157,68 +295,102 @@ endif
 if (.not.allocated(fields_to_do)) return
 
 
-! Assertion on D-Grid winds
-! -------------------------
-if (dxg%has_field('ud')) call abor1_ftn("GeoVaLs state should not have D-Grid winds")
-
-
 ! Winds
 ! -----
 have_winds = .false.
-if (dxm%has_field('ud')) then
-  call dxm%get_field('ud', ud)
-  call dxm%get_field('vd', vd)
-  allocate(ua(self%isc:self%iec,self%jsc:self%jec,self%npz))
-  allocate(va(self%isc:self%iec,self%jsc:self%jec,self%npz))
-  call d_to_a(geom, ud, vd, ua, va)
-  have_winds = .true.
-elseif (dxm%has_field('ua')) then
-    call dxm%get_field('ua', ua)
-    call dxm%get_field('va', va)
+if (dxm%has_field('eastward_wind') .and. dxm%has_field('northward_wind')) then
+    call dxm%get_field('eastward_wind', ua)
+    call dxm%get_field('northward_wind', va)
     have_winds = .true.
 endif
 
 
-! Virtual temperature
-! -------------------
-have_tv = .false.
-if (allocated(self%t) .and. allocated(self%t) .and. &
-    dxm%has_field('t') .and. dxm%has_field('sphum')) then
-  call dxm%get_field('t', t)
-  call dxm%get_field('sphum', q)
-  allocate(tv(self%isc:self%iec,self%jsc:self%jec,self%npz))
-  call T_to_Tv_tl(geom, self%t, t, self%q, q, tv )
-  have_tv = .true.
-endif
+
+! Virtual temperature needed but now done in VADER
+! ------------------------------------------------
 
 
 ! Humidity mixing ratio
 ! ---------------------
 have_qmr = .false.
-if (allocated(self%q) .and. dxm%has_field('sphum')) then
-  call dxm%get_field('sphum', q)
+if (allocated(self%q) .and. dxm%has_field('water_vapor_mixing_ratio_wrt_moist_air')) then
+  call dxm%get_field('water_vapor_mixing_ratio_wrt_moist_air', q)
   allocate(qmr(self%isc:self%iec,self%jsc:self%jec,self%npz))
   call crtm_mixratio_tl(geom, self%q, q, qmr)
   have_qmr = .true.
 endif
 
+! Cloud liquid water
+! ------------------
+have_ql = .false.
+if (allocated(self%ql).and.allocated(self%delp).and.dxm%has_field('cloud_liquid_water').and.&
+   dxg%has_field('mass_content_of_cloud_liquid_water_in_atmosphere_layer')) then
+  call dxm%get_field('cloud_liquid_water', cmxr)
+  allocate(clwpath(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  call hydro_mixr_to_wpath_tl (geom, self%delp, self%ql, cmxr, clwpath)
+  have_ql = .true.
+endif
+
+! Cloud ice water
+! ---------------
+have_qi = .false.
+if (allocated(self%qi).and.allocated(self%delp).and.dxm%has_field('cloud_liquid_ice').and.&
+   dxg%has_field('mass_content_of_cloud_ice_in_atmosphere_layer')) then
+  call dxm%get_field('cloud_liquid_ice', cmxr)
+  allocate(ciwpath(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  call hydro_mixr_to_wpath_tl (geom, self%delp, self%qi, cmxr, ciwpath)
+  have_qi = .true.
+endif
+
+! Rain
+! ----
+have_qr = .false.
+if (allocated(self%qr).and.allocated(self%delp).and.dxm%has_field('rainwat').and.&
+   dxg%has_field('mass_content_of_rain_in_atmosphere_layer')) then
+  call dxm%get_field('rainwat', cmxr)
+  allocate(crwpath(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  call hydro_mixr_to_wpath_tl (geom, self%delp, self%qr, cmxr, crwpath)
+  have_qr = .true.
+endif
+
+! Snow
+! ----
+have_qs = .false.
+if (allocated(self%qs).and.allocated(self%delp).and.dxm%has_field('snowwat').and.&
+   dxg%has_field('mass_content_of_snow_in_atmosphere_layer')) then
+  call dxm%get_field('snowwat', cmxr)
+  allocate(cswpath(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  call hydro_mixr_to_wpath_tl (geom, self%delp, self%qs, cmxr, cswpath)
+  have_qs = .true.
+endif
+
+! Graupel
+! -------
+have_qg = .false.
+if (allocated(self%qg).and.allocated(self%delp).and.dxm%has_field('graupel').and.&
+   dxg%has_field('mass_content_of_graupel_in_atmosphere_layer')) then
+  call dxm%get_field('graupel', cmxr)
+  allocate(cgwpath(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  call hydro_mixr_to_wpath_tl (geom, self%delp, self%qg, cmxr, cgwpath)
+  have_qg = .true.
+endif
 
 ! Ozone
 ! -----
 have_o3   = .false.
-if (dxm%has_field( 'o3mr')) then
-  call dxm%get_field('o3mr', o3mr)
+if (dxm%has_field( 'ozone_mass_mixing_ratio')) then
+  call dxm%get_field('ozone_mass_mixing_ratio', o3mr)
   allocate(o3ppmv(self%isc:self%iec,self%jsc:self%jec,self%npz))
-  o3ppmv = o3mr * constoz
+  o3ppmv = o3mr * constant('constoz')
   have_o3 = .true.
-elseif (dxm%has_field('o3ppmv')) then
-  call dxm%get_field('o3ppmv', o3ppmv)
+elseif (dxm%has_field('mole_fraction_of_ozone_in_air')) then
+  call dxm%get_field('mole_fraction_of_ozone_in_air', o3ppmv)
   have_o3 = .true.
 endif
 
 if (have_o3) then
-  if (.not.allocated(self%o3)) call abor1_ftn("fv3jedi_lvc_model2geovals_mod.multiply no ozone" // &
-                                              "found in trajectory")
+  if (.not.allocated(self%o3)) call abor1_ftn('fv3jedi_lvc_model2geovals_mod.multiply no ozone' // &
+                                              'found in trajectory')
   do k = 1, self%npz
     do j = self%jsc, self%jec
       do i = self%isc, self%iec
@@ -233,16 +405,37 @@ endif
 ! Surface pressure
 ! ----------------
 have_ps = .false.
-if (dxm%has_field( 'ps')) then
-  call dxm%get_field('ps', ps)
+if (dxm%has_field( 'air_pressure_at_surface')) then
+  call dxm%get_field('air_pressure_at_surface', ps)
   have_ps = .true.
-elseif (dxm%has_field('delp')) then
-  call dxm%get_field('delp', delp)
+elseif (dxm%has_field('air_pressure_thickness')) then
+  call dxm%get_field('air_pressure_thickness', delp)
   allocate(ps(self%isc:self%iec,self%jsc:self%jec,1))
   ps(:,:,1) = sum(delp,3)
   have_ps = .true.
 endif
 
+have_prs=.false.
+if (have_ps.and.dxg%has_field('air_pressure')) then
+  allocate(prs(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  call ps_to_p_tl(geom,ps,prs)
+  have_prs=.true.
+endif
+
+have_pe=.false.
+if (have_ps.and.dxg%has_field('air_pressure_levels')) then
+  allocate(pe(self%isc:self%iec,self%jsc:self%jec,self%npz+1))
+  call ps_to_pe_tl(geom,ps,pe)
+  have_pe=.true.
+endif
+
+! Skin temperature
+! ----------------
+have_tskin = .false.
+if (dxm%has_field( 'skin_temperature_at_surface')) then
+  call dxm%get_field('skin_temperature_at_surface', tskin)
+  have_tskin = .true.
+endif
 
 ! Loop over the fields not found in the input state and work through cases
 ! ------------------------------------------------------------------------
@@ -252,52 +445,95 @@ do f = 1, size(fields_to_do)
 
   select case (trim(fields_to_do(f)))
 
-  case ("ua")
+  case ('eastward_wind')
 
     if (.not. have_winds) call field_fail(fields_to_do(f))
     field_ptr = ua
 
-  case ("va")
+  case ('northward_wind')
 
     if (.not. have_winds) call field_fail(fields_to_do(f))
     field_ptr = va
 
-  case ("tv")
+! Virtual temperature needed but now done in VADER
+!   case ('tv')
 
-    if (.not. have_tv) call field_fail(fields_to_do(f))
-    field_ptr = tv
-
-  case ("ps")
+  case ('air_pressure_at_surface')
 
     if (.not. have_ps) call field_fail(fields_to_do(f))
     field_ptr = ps
 
-  case ("humidity_mixing_ratio")
+  case ('skin_temperature_at_surface')
+
+    if (.not. have_tskin) call field_fail(fields_to_do(f))
+    field_ptr = tskin
+
+  case ('water_vapor_mixing_ratio_wrt_dry_air')
 
     if (.not. have_qmr) call field_fail(fields_to_do(f))
     field_ptr = qmr
 
-  case ("o3ppmv", "mole_fraction_of_ozone_in_air")
+  case ('mole_fraction_of_ozone_in_air')
 
     if (.not. have_o3) call field_fail(fields_to_do(f))
     field_ptr = o3ppmv
 
+  case ('mass_content_of_cloud_liquid_water_in_atmosphere_layer')
+
+    if (have_ql) field_ptr = clwpath
+
+  case ('mass_content_of_cloud_ice_in_atmosphere_layer')
+    if (have_qi) field_ptr = ciwpath
+
+  case ('mass_content_of_rain_in_atmosphere_layer')
+    if (have_qr) field_ptr = crwpath
+
+  case ('mass_content_of_snow_in_atmosphere_layer')
+    if (have_qs) field_ptr = cswpath
+
+  case ('mass_content_of_graupel_in_atmosphere_layer')
+
+    if (have_qg) field_ptr = cgwpath
+
+  case ('air_pressure')
+
+     if (have_prs) field_ptr = prs
+
+  case ('air_pressure_levels')
+
+    if (have_pe) field_ptr = pe
+
   ! Simulated but not assimilated
-  case ("mass_content_of_cloud_liquid_water_in_atmosphere_layer")
-  case ("mass_content_of_cloud_ice_in_atmosphere_layer")
-  case ("mass_content_of_rain_in_atmosphere_layer")
-  case ("mass_content_of_snow_in_atmosphere_layer")
-  case ("pe")
-  case ("p")
+  case ("skin_temperature_at_surface_where_sea")
+  case ("skin_temperature_at_surface_where_land")
+  case ("skin_temperature_at_surface_where_ice")
+  case ("skin_temperature_at_surface_where_snow")
+  case ("mass_content_of_cloud_liquid_water_in_atmosphere_column")
+  case ("mass_content_of_cloud_ice_in_atmosphere_column")
+  case ("mass_content_of_rain_in_atmosphere_column")
+  case ("mass_content_of_snow_in_atmosphere_column")
+  case ("mass_content_of_graupel_in_atmosphere_column")
 
   case default
 
-    call abor1_ftn("fv3jedi_lvc_model2geovals_mod.multiply unknown field: "//trim(fields_to_do(f)) &
-                   //". Not in input field and no transform case specified.")
+    call abor1_ftn('fv3jedi_lvc_model2geovals_mod.multiply unknown field: '//trim(fields_to_do(f)) &
+                   //'. Not in input field and no transform case specified.')
 
   end select
 
 enddo
+
+if(allocated(ua)) deallocate(ua)
+if(allocated(va)) deallocate(va)
+if(allocated(qmr)) deallocate(qmr)
+if(allocated(o3ppmv)) deallocate(o3ppmv)
+if(allocated(clwpath)) deallocate(clwpath)
+if(allocated(ciwpath)) deallocate(ciwpath)
+if(allocated(crwpath)) deallocate(crwpath)
+if(allocated(cswpath)) deallocate(cswpath)
+if(allocated(cgwpath)) deallocate(cgwpath)
+if(allocated(prs)) deallocate(prs)
+if(allocated(pe)) deallocate(pe)
 
 end subroutine multiply
 
@@ -318,12 +554,10 @@ logical, allocatable :: field_passed(:)
 integer :: noassim_index
 
 !Winds
-logical :: have_awinds, have_dwinds
+logical :: have_awinds
 integer :: ua_index, va_index
 real(kind=kind_real), pointer     :: ua   (:,:,:)         !A-grid wind u component
 real(kind=kind_real), pointer     :: va   (:,:,:)         !A-grid wind v component
-real(kind=kind_real), allocatable :: ud   (:,:,:)         !D-grid wind u component
-real(kind=kind_real), allocatable :: vd   (:,:,:)         !D-grid wind v component
 
 !Virtual temperature
 logical :: have_tv
@@ -340,6 +574,21 @@ real(kind=kind_real), pointer     :: qmr  (:,:,:)         !Virtual temperature
 real(kind=kind_real), allocatable :: q_qmr(:,:,:)         !Specific humidity
 real(kind=kind_real), pointer     :: qptr (:,:,:)         !Specific humidity
 
+!Cloud liquid water mixing ratio
+logical :: have_ql,have_qi,have_qr,have_qs,have_qg
+real(kind=kind_real), pointer     :: wpath (:,:,:)        !Water path
+
+real(kind=kind_real), allocatable :: dql (:,:,:)          !Cloud liq water mixing ratio ad
+real(kind=kind_real), allocatable :: dqi (:,:,:)          !Cloud ice water mixing ratio ad
+real(kind=kind_real), allocatable :: dqr (:,:,:)          !Rain water mixing ratio ad
+real(kind=kind_real), allocatable :: dqs (:,:,:)          !Snow water mixing ratio ad
+real(kind=kind_real), allocatable :: dqg (:,:,:)          !Graupel mixing ratio ad
+integer :: ql_index
+integer :: qi_index
+integer :: qr_index
+integer :: qs_index
+integer :: qg_index
+
 !Ozone mixing ratio
 logical :: have_o3mr, have_o3ppmv
 integer :: o3_index
@@ -347,24 +596,45 @@ real(kind=kind_real), allocatable :: o3mr  (:,:,:)        !Ozone mixing ratio
 real(kind=kind_real), allocatable :: o3ppmv(:,:,:)        !Ozone ppmv
 
 !Surface pressure
-logical :: have_ps
-integer :: ps_index
+logical :: have_ps,have_dp
+integer :: ps_index,dp_index
 real(kind=kind_real), pointer     :: ps   (:,:,:)         !Surface pressure
-real(kind=kind_real), allocatable :: delp (:,:,:)         !Pressure thickness
+real(kind=kind_real), pointer     :: delp (:,:,:)         !Pressure thickness
 
+!Air pressure
+logical :: have_prs,have_pe
+integer :: prs_index,pe_index
+real(kind=kind_real), allocatable :: prs (:,:,:)         !Air pressure (midlevs)
+real(kind=kind_real), allocatable :: pe  (:,:,:)         !Air pressure (edges)
+
+!Skin temperature
+logical :: have_tsea,have,have_tland,have_tice,have_tsnow
+integer :: tskin_index
+integer :: tskin_sea_index, tskin_land_index, tskin_ice_index, tskin_snow_index
+real(kind=kind_real), pointer     :: dtsea   (:,:,:)       !Sea surface temperature
+real(kind=kind_real), pointer     :: dtland  (:,:,:)       !Land surface temperature
+real(kind=kind_real), pointer     :: dtice   (:,:,:)       !Ice surface temperature
+real(kind=kind_real), pointer     :: dtsnow  (:,:,:)       !Snow surface temperature
+
+! initialize pointers
+ps_index=0
+ql_index=0
+qi_index=0
+qr_index=0
+qs_index=0
+qg_index=0
 
 ! Print information
 !if (geom%f_comm%rank()==0) then
 !  do fg = 1, size(dxg%fields)
-!    print*, "Model2GeoVaLs.multiplyAD, GeoVaLs fields IN: ", trim(dxg%fields(fg)%short_name), &
+!    print*, 'Model2GeoVaLs.multiplyAD, GeoVaLs fields IN: ', trim(dxg%fields(fg)%long_name), &
 !            minval(dxg%fields(fg)%array), maxval(dxg%fields(fg)%array)
 !  enddo
 !  do fm = 1, size(dxm%fields)
-!    print*, "Model2GeoVaLs.multiplyAD, Model fields IN:   ", trim(dxm%fields(fm)%short_name), &
+!    print*, 'Model2GeoVaLs.multiplyAD, Model fields IN:   ', trim(dxm%fields(fm)%long_name), &
 !            minval(dxm%fields(fm)%array), maxval(dxm%fields(fm)%array)
 !  enddo
 !endif
-
 
 ! Keep track of input fields passed to output
 allocate(field_passed(size(dxg%fields)))
@@ -374,15 +644,15 @@ field_passed = .false.
 num_not_copied = 0
 do fm = 1, size(dxm%fields)
   ! Identity if found and not winds
-  if (.not.trim(dxm%fields(fm)%short_name) == 'ua' .and. &
-      .not.trim(dxm%fields(fm)%short_name) == 'va' .and. &
-      dxg%has_field( dxm%fields(fm)%short_name, dxg_index)) then
-    call dxg%get_field(dxm%fields(fm)%short_name, field_ptr)
+  if (.not.trim(dxm%fields(fm)%long_name) == 'eastward_wind' .and. &
+      .not.trim(dxm%fields(fm)%long_name) == 'northward_wind' .and. &
+      dxg%has_field( dxm%fields(fm)%long_name, dxg_index)) then
+    call dxg%get_field(dxm%fields(fm)%long_name, field_ptr)
     dxm%fields(fm)%array = dxm%fields(fm)%array + field_ptr
     field_passed(dxg_index) = .true.
   else
     num_not_copied = num_not_copied + 1
-    not_copied_(num_not_copied) = dxm%fields(fm)%short_name
+    not_copied_(num_not_copied) = dxm%fields(fm)%long_name
   endif
 enddo
 
@@ -393,71 +663,159 @@ fields_to_do(1:num_not_copied) = not_copied_(1:num_not_copied)
 ! Winds
 ! -----
 have_awinds = .false.
-have_dwinds = .false.
-if (dxg%has_field( "ua", ua_index) .and. dxg%has_field( "va", va_index)) then
-  call dxg%get_field('ua', ua)
-  call dxg%get_field('va', va)
-  if (dxm%has_field('ud')) then
-    allocate(ud(self%isc:self%iec  ,self%jsc:self%jec+1,self%npz))
-    allocate(vd(self%isc:self%iec+1,self%jsc:self%jec  ,self%npz))
-    ud = 0.0_kind_real
-    vd = 0.0_kind_real
-    call d_to_a_ad(geom, ud, vd, ua, va)
-    have_dwinds = .true.
-  elseif (dxm%has_field('ua')) then
+if (dxg%has_field( 'eastward_wind', ua_index) .and. dxg%has_field( 'northward_wind', va_index)) then
+  call dxg%get_field('eastward_wind', ua)
+  call dxg%get_field('northward_wind', va)
+  if (dxm%has_field('eastward_wind') .and. dxm%has_field('northward_wind')) then
     have_awinds = .true.
   else
-    call abor1_ftn("fv3jedi_lvc_model2geovals_mod.multiplyadjoint: Winds found in GeoVaLs but"// &
-                   " not in the model.")
+    call abor1_ftn('fv3jedi_lvc_model2geovals_mod.multiplyadjoint: Winds found in GeoVaLs but'// &
+                   ' not in the model.')
   endif
 endif
 
 
-! Virtual temperature
-! -------------------
-have_tv = .false.
-if (allocated(self%t) .and. allocated(self%t) .and. dxg%has_field('tv', tv_index)) then
-  call dxg%get_field('tv', tv)
-  allocate(t_tv(self%isc:self%iec,self%jsc:self%jec,self%npz))
-  allocate(q_tv(self%isc:self%iec,self%jsc:self%jec,self%npz))
-  t_tv = 0.0_kind_real
-  q_tv = 0.0_kind_real
-  call T_to_Tv_ad(geom, self%t, t_tv, self%q, q_tv, tv )
-  have_tv = .true.
-endif
-
+! Virtual temperature needed but now done in VADER
+! ------------------------------------------------
 
 ! Humidity mixing ratio
 ! ---------------------
 have_qmr = .false.
-if (allocated(self%q) .and. dxg%has_field('humidity_mixing_ratio', qmr_index)) then
-  call dxg%get_field('humidity_mixing_ratio', qmr)
+if (allocated(self%q) .and. dxg%has_field('water_vapor_mixing_ratio_wrt_dry_air', qmr_index)) then
+  call dxg%get_field('water_vapor_mixing_ratio_wrt_dry_air', qmr)
   allocate(q_qmr(self%isc:self%iec,self%jsc:self%jec,self%npz))
   q_qmr = 0.0_kind_real
   call crtm_mixratio_ad(geom, self%q, q_qmr, qmr)
   have_qmr = .true.
 endif
 
-
 ! Pressure
 ! --------
-have_ps = .false.
-if (dxg%has_field( "ps", ps_index)) then
-  call dxg%get_field('ps', ps)
+have_ps = .false.; have_dp=.false.
+if (dxg%has_field( 'air_pressure_at_surface', ps_index).and.&
+    dxm%has_field( 'air_pressure_thickness', dp_index)) then
+  call dxg%get_field('air_pressure_at_surface', ps)
   allocate(delp(self%isc:self%iec,self%jsc:self%jec,self%npz))
   delp = 0.0_kind_real
   do k = 1, self%npz
+!   delp(:,:,k) = delp(:,:,k) + (geom%bk(k+1)-geom%bk(k))*ps(:,:,1)
     delp(:,:,k) = delp(:,:,k) + ps(:,:,1)
   enddo
   have_ps = .true.
+  have_dp = .true.
+elseif (dxg%has_field( 'air_pressure_thickness', dp_index)) then
+  call dxg%get_field('air_pressure_thickness', delp)
+  have_dp = .true.
 endif
 
+have_pe=.false.; have_prs=.false.
+if (dxg%has_field( "air_pressure_levels", pe_index) ) then
+  call dxg%get_field("air_pressure_levels", pe)
+  if (.not.have_ps) then
+     allocate(ps(self%isc:self%iec,self%jsc:self%jec,1))
+  endif
+  call ps_to_pe_ad(geom,ps,pe)
+  have_pe=.true.
+elseif (dxg%has_field( "air_pressure", prs_index) ) then
+  call dxg%get_field("air_pressure", prs)
+  if(.not. have_ps) then
+    allocate(ps(self%isc:self%iec,self%jsc:self%jec,1))
+  endif
+  ps=0.0_kind_real
+  call ps_to_p_ad(geom,ps,prs)
+  have_prs=.true.
+endif
+
+! Cloud liquid water
+! ------------------
+have_ql = .false.
+if (allocated(self%ql).and.allocated(self%delp).and.dxm%has_field('cloud_liquid_water').and.&
+    dxg%has_field('mass_content_of_cloud_liquid_water_in_atmosphere_layer',ql_index)) then
+  call dxg%get_field('mass_content_of_cloud_liquid_water_in_atmosphere_layer', wpath)
+  allocate(dql(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  dql=0.0_kind_real
+  call hydro_mixr_to_wpath_ad (geom, self%delp, self%ql, dql, wpath)
+  have_ql = .true.
+endif
+
+! Cloud ice water
+! ---------------
+have_qi = .false.
+if (allocated(self%qi).and.allocated(self%delp).and.dxm%has_field('cloud_liquid_ice').and.&
+    dxg%has_field('mass_content_of_cloud_ice_in_atmosphere_layer',qi_index)) then
+  call dxg%get_field('mass_content_of_cloud_ice_in_atmosphere_layer', wpath)
+  allocate(dqi(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  dqi=0.0_kind_real
+  call hydro_mixr_to_wpath_ad (geom, self%delp, self%qi, dqi, wpath)
+  have_qi = .true.
+endif
+
+! Rain
+! ----
+have_qr = .false.
+if (allocated(self%qr).and.allocated(self%delp).and.dxm%has_field('rainwat').and.&
+  dxg%has_field('mass_content_of_rain_in_atmosphere_layer',qr_index)) then
+  call dxg%get_field('mass_content_of_rain_in_atmosphere_layer', wpath)
+  allocate(dqr(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  dqr=0.0_kind_real
+  call hydro_mixr_to_wpath_ad (geom, self%delp, self%qr, dqr, wpath)
+  have_qr = .true.
+endif
+
+! Snow
+! ----
+have_qs = .false.
+if (allocated(self%qs).and.allocated(self%delp).and.dxm%has_field('snowwat').and.&
+  dxg%has_field('mass_content_of_snow_in_atmosphere_layer',qs_index)) then
+  call dxg%get_field('mass_content_of_snow_in_atmosphere_layer', wpath)
+  allocate(dqs(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  dqs=0.0_kind_real
+  call hydro_mixr_to_wpath_ad (geom, self%delp, self%qs, dqs, wpath)
+  have_qs = .true.
+endif
+
+! Graupel
+! -------
+have_qg = .false.
+if (allocated(self%qg).and.allocated(self%delp).and.dxm%has_field('graupel').and.&
+  dxg%has_field('mass_content_of_graupel_in_atmosphere_layer',qg_index)) then
+  call dxg%get_field('mass_content_of_graupel_in_atmosphere_layer', wpath)
+  allocate(dqg(self%isc:self%iec,self%jsc:self%jec,self%npz))
+  dqg=0.0_kind_real
+  call hydro_mixr_to_wpath_ad (geom, self%delp, self%qg, dqg, wpath)
+  have_qg = .true.
+endif
+
+! Skin temperature
+! ----------------
+have_tland = .false.
+have_tsea  = .false.
+have_tice  = .false.
+have_tsnow = .false.
+if (dxm%has_field('skin_temperature_at_surface',tskin_index)) then
+   if ( allocated(self%frland).and.dxg%has_field('skin_temperature_at_surface_where_land',tskin_land_index) ) then
+     call dxg%get_field('skin_temperature_at_surface_where_land',dtland)
+     have_tland = .true.
+   endif
+   if ( allocated(self%frocean).and.dxg%has_field('skin_temperature_at_surface_where_sea',tskin_sea_index) ) then
+     call dxg%get_field('skin_temperature_at_surface_where_sea',dtsea)
+     have_tsea = .true.
+   endif
+   if ( allocated(self%frseaice).and.dxg%has_field('skin_temperature_at_surface_where_ice',tskin_ice_index) ) then
+     call dxg%get_field('skin_temperature_at_surface_where_ice',dtice)
+     have_tice = .true.
+   endif
+   if ( allocated(self%frsnow).and.dxg%has_field('skin_temperature_at_surface_where_snow',tskin_snow_index) ) then
+     call dxg%get_field('skin_temperature_at_surface_where_snow',dtsnow)
+     have_tsnow = .true.
+   endif
+endif
 
 ! Ozone
 ! -----
 have_o3ppmv = .false.
-if (dxg%has_field('o3ppmv', o3_index)) then
-  call dxg%get_field('o3ppmv', o3ppmv)
+if (dxg%has_field('mole_fraction_of_ozone_in_air', o3_index)) then
+  call dxg%get_field('mole_fraction_of_ozone_in_air', o3ppmv)
   have_o3ppmv = .true.
 elseif (dxg%has_field('mole_fraction_of_ozone_in_air', o3_index)) then
   call dxg%get_field('mole_fraction_of_ozone_in_air', o3ppmv)
@@ -466,8 +824,8 @@ endif
 
 have_o3mr = .false.
 if (have_o3ppmv) then
-  if (.not.allocated(self%o3)) call abor1_ftn("fv3jedi_lvc_model2geovals_mod.multiply no ozone" // &
-                                              "found in trajectory")
+  if (.not.allocated(self%o3)) call abor1_ftn('fv3jedi_lvc_model2geovals_mod.multiply no ozone' // &
+                                              'found in trajectory')
   do k = 1, self%npz
     do j = self%jsc, self%jec
       do i = self%isc, self%iec
@@ -480,31 +838,51 @@ if (have_o3ppmv) then
 
   ! Adjoint of ppmv to mixing ratio
   allocate(o3mr(self%isc:self%iec,self%jsc:self%jec,self%npz))
-  o3mr = o3ppmv * constoz
+  o3mr = o3ppmv * constant('constoz')
   have_o3mr = .true.
 
 endif
 
 ! Simulated but not assimilated
-if (dxg%has_field( "mass_content_of_cloud_liquid_water_in_atmosphere_layer", noassim_index)) &
+if (dxg%has_field( 'mass_content_of_cloud_liquid_water_in_atmosphere_layer', noassim_index)) &
   field_passed(noassim_index) = .true.
-if (dxg%has_field( "mass_content_of_cloud_ice_in_atmosphere_layer", noassim_index)) &
+if (dxg%has_field( 'mass_content_of_cloud_ice_in_atmosphere_layer', noassim_index)) &
   field_passed(noassim_index) = .true.
-if (dxg%has_field( "mass_content_of_rain_in_atmosphere_layer", noassim_index)) &
+if (dxg%has_field( 'mass_content_of_rain_in_atmosphere_layer', noassim_index)) &
   field_passed(noassim_index) = .true.
-if (dxg%has_field( "mass_content_of_snow_in_atmosphere_layer", noassim_index)) &
+if (dxg%has_field( 'mass_content_of_snow_in_atmosphere_layer', noassim_index)) &
   field_passed(noassim_index) = .true.
-if (dxg%has_field( "p", noassim_index)) &
+if (dxg%has_field( 'mass_content_of_graupel_in_atmosphere_layer', noassim_index)) &
   field_passed(noassim_index) = .true.
-if (dxg%has_field( "pe", noassim_index)) &
+if (dxg%has_field( "mass_content_of_cloud_liquid_water_in_atmosphere_column", noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( "mass_content_of_cloud_ice_in_atmosphere_column", noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( "mass_content_of_rain_in_atmosphere_column", noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( "mass_content_of_snow_in_atmosphere_column", noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( "mass_content_of_graupel_in_atmosphere_column", noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( "skin_temperature_at_surface_where_sea", noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( 'skin_temperature_at_surface_where_land', noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( 'skin_temperature_at_surface_where_ice', noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( 'skin_temperature_at_surface_where_snow', noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( 'air_pressure', noassim_index)) &
+  field_passed(noassim_index) = .true.
+if (dxg%has_field( 'air_pressure_levels', noassim_index)) &
   field_passed(noassim_index) = .true.
 
 
 ! Print information
 !if (geom%f_comm%rank()==0) then
 ! do fg = 1, size(dxg%fields)
-!   print*, "Model2GeoVaLs.multiplyAD, GeoVaLs fields: ", trim(dxg%fields(fg)%short_name), &
-!           ", passed: ", field_passed(fg)
+!   print*, 'Model2GeoVaLs.multiplyAD, GeoVaLs fields: ', trim(dxg%fields(fg)%long_name), &
+!           ', passed: ', field_passed(fg)
 ! enddo
 !endif
 
@@ -517,53 +895,134 @@ do fm = 1, size(fields_to_do)
 
   select case(trim(fields_to_do(fm)))
 
-  case ("ud")
-
-    if (have_dwinds) then
-      field_passed(ua_index) = .true.
-      field_ptr = field_ptr + ud
-    endif
-
-  case ("vd")
-
-    if (have_dwinds) then
-      field_passed(va_index) = .true.
-      field_ptr = field_ptr + vd
-    endif
-
-  case ("ua")
+  case ('eastward_wind')
 
     if (have_awinds) then
+!     call check_index ("ua_index",ua_index)
       field_passed(ua_index) = .true.
       field_ptr = field_ptr + ua
     endif
 
-  case ("va")
+  case ('northward_wind')
 
     if (have_awinds) then
+!     call check_index ("va_index",va_index)
       field_passed(va_index) = .true.
       field_ptr = field_ptr + va
     endif
 
-  case ("delp")
+  case ('air_pressure_thickness')
 
-    if (have_ps) then
-      field_passed(ps_index) = .true.
+    if (have_dp) then
+!     call check_index ("dp_index",dp_index)
+      field_passed(dp_index) = .true.
       field_ptr = field_ptr + delp
     endif
 
-  case ("o3mr")
+  case ('air_pressure_levels')
+
+    if (have_pe) then
+!     call check_index ("pe_index",pe_index)
+      field_passed(pe_index) = .true.
+      field_ptr = field_ptr + pe
+    endif
+
+  case ('air_pressure_at_surface')
+
+    if (have_ps) then
+!     call check_index ("ps_index",ps_index)
+      field_passed(ps_index) = .true.
+      field_ptr = field_ptr + ps
+    endif
+
+  case ('ozone_mass_mixing_ratio')
 
     if (have_o3mr) then
+!     call check_index ("o3_index",o3_index)
       field_passed(o3_index) = .true.
       field_ptr = field_ptr + o3mr
     endif
 
-  case ("o3ppmv")
+  case ('mole_fraction_of_ozone_in_air')
 
     if (have_o3ppmv) then
+!     call check_index ("o3_index",o3_index)
       field_passed(o3_index) = .true.
       field_ptr = field_ptr + o3ppmv
+    endif
+
+  case ('cloud_liquid_water')
+
+    if (have_ql) then
+!     call check_index ("ql_index",ql_index)
+      field_passed(ql_index) = .true.
+      field_ptr = field_ptr + dql
+    endif
+
+  case ('cloud_liquid_ice')
+
+    if (have_qi) then
+!     call check_index ("qi_index",qi_index)
+      field_passed(qi_index) = .true.
+      field_ptr = field_ptr + dqi
+    endif
+
+  case ('rainwat')
+
+    if (have_qr) then
+!     call check_index ("qr_index",qr_index)
+      field_passed(qr_index) = .true.
+      field_ptr = field_ptr + dqr
+    endif
+
+  case ('snowwat')
+
+    if (have_qs) then
+!     call check_index ("qs_index",qs_index)
+      field_passed(qs_index) = .true.
+      field_ptr = field_ptr + dqs
+    endif
+
+  case ('graupel')
+
+    if (have_qg) then
+!     call check_index ("qg_index",qg_index)
+      field_passed(qg_index) = .true.
+      field_ptr = field_ptr + dqg
+    endif
+
+  case ('skin_temperature_at_surface')
+
+    if (have_tsea) then
+!     call check_index ("tskin_sea_index",tskin_sea_index)
+      field_passed(tskin_sea_index) = .true.
+      where (self%frocean>0.0_kind_real)
+        field_ptr = field_ptr + dtsea
+      endwhere
+    endif
+
+    if (have_tland) then
+!     call check_index ("tskin_land_index",tskin_land_index)
+      field_passed(tskin_land_index) = .true.
+      where (self%frland>0.0_kind_real)
+        field_ptr = field_ptr + dtland
+      endwhere
+    endif
+
+    if (have_tice) then
+!     call check_index ("tskin_ice_index",tskin_ice_index)
+      field_passed(tskin_ice_index) = .true.
+      where (self%frseaice>0.0_kind_real)
+        field_ptr = field_ptr + dtice
+      endwhere
+    endif
+
+    if (have_tsnow) then
+!     call check_index ("tskin_snow_index",tskin_snow_index)
+      field_passed(tskin_snow_index) = .true.
+      where (self%frsnow>0.0_kind_real)
+        field_ptr = field_ptr + dtsnow
+      endwhere
     endif
 
   end select
@@ -573,8 +1032,8 @@ enddo
 ! Print information
 !if (geom%f_comm%rank()==0) then
 ! do fg = 1, size(dxg%fields)
-!   print*, "Model2GeoVaLs.multiplyAD, GeoVaLs fields: ", trim(dxg%fields(fg)%short_name), &
-!           "Passed: ", field_passed(fg)
+!   print*, 'Model2GeoVaLs.multiplyAD, GeoVaLs fields: ', trim(dxg%fields(fg)%long_name), &
+!           'Passed: ', field_passed(fg)
 ! enddo
 !endif
 
@@ -584,28 +1043,23 @@ do fg = 1, size(dxg%fields)
 
   if (.not. field_passed(fg)) then
 
-    select case(trim(dxg%fields(fg)%short_name))
+    select case(trim(dxg%fields(fg)%long_name))
 
-    case ("tv")
+    case ('water_vapor_mixing_ratio_wrt_dry_air')
 
-      if (.not. have_tv) call field_fail(trim(dxg%fields(fg)%short_name))
-      field_passed(tv_index) = .true.
-      call dxm%get_field("t", tptr)
-      call dxm%get_field("sphum", qptr)
-      tptr = tptr + t_tv
-      qptr = qptr + q_tv
-
-    case ("humidity_mixing_ratio")
-
-      if (.not. have_qmr) call field_fail(trim(dxg%fields(fg)%short_name))
+      if (.not. have_qmr) call field_fail(trim(dxg%fields(fg)%long_name))
       field_passed(qmr_index) = .true.
-      call dxm%get_field("sphum", qptr)
+      call dxm%get_field('water_vapor_mixing_ratio_wrt_moist_air', qptr)
       qptr = qptr + q_qmr
+
+    case ('air_pressure_at_surface')
+
+      field_passed(ps_index) = .true.
 
     case default
 
-      call abor1_ftn("GeoVaLs field "//trim(dxg%fields(fg)%short_name)//" has no known link "// &
-                      "to fields in model state")
+      call abor1_ftn('GeoVaLs field '//trim(dxg%fields(fg)%long_name)//' has no known link '// &
+                      'to fields in model state')
 
     end select
 
@@ -617,23 +1071,40 @@ enddo
 ! Check all fields have been linked to an output field
 do fg = 1, size(dxg%fields)
   if (.not. field_passed(fg)) then
-    call abor1_ftn("fv3jedi_lvc_model2geovals_mod.multiplyadjoint failed to send all geoval "// &
-                   "fields to a model field")
+    call abor1_ftn('fv3jedi_lvc_model2geovals_mod.multiplyadjoint failed to send all geoval '// &
+                   'fields to a model field')
   endif
 enddo
 
 ! ! Print information
 ! if (geom%f_comm%rank()==0) then
 !   do fg = 1, size(dxg%fields)
-!     print*, "Model2GeoVaLs.multiplyAD, GeoVaLs fields OUT: ", trim(dxg%fields(fg)%short_name), minval(dxg%fields(fg)%array), maxval(dxg%fields(fg)%array)
+!     print*, 'Model2GeoVaLs.multiplyAD, GeoVaLs fields OUT: ', trim(dxg%fields(fg)%long_name), minval(dxg%fields(fg)%array), maxval(dxg%fields(fg)%array)
 !   enddo
 !   do fm = 1, size(dxm%fields)
-!     print*, "Model2GeoVaLs.multiplyAD, Model fields OUT:   ", trim(dxm%fields(fm)%short_name), minval(dxm%fields(fg)%array), maxval(dxm%fields(fg)%array)
+!     print*, 'Model2GeoVaLs.multiplyAD, Model fields OUT:   ', trim(dxm%fields(fm)%long_name), minval(dxm%fields(fg)%array), maxval(dxm%fields(fg)%array)
 !   enddo
 ! endif
+
+if(allocated(o3mr)) deallocate(o3mr)
+if(allocated(dql)) deallocate(dql)
+if(allocated(dqi)) deallocate(dqi)
+if(allocated(dqr)) deallocate(dqr)
+if(allocated(dqs)) deallocate(dqs)
+if(allocated(dqg)) deallocate(dqg)
+if(allocated(q_qmr)) deallocate(q_qmr)
+if(allocated(pe)) deallocate(pe)
+if(allocated(prs)) deallocate(prs)
 
 end subroutine multiplyadjoint
 
 ! --------------------------------------------------------------------------------------------------
 
+subroutine check_index (this,idx)
+  character(len=*), intent(in) :: this
+  integer, intent (in) :: idx
+  if (idx==0) then
+      call abor1_ftn('GeoVaLs index: '//trim(this)//' unacceptable ...')
+  endif
+end subroutine check_index
 end module fv3jedi_lvc_model2geovals_mod

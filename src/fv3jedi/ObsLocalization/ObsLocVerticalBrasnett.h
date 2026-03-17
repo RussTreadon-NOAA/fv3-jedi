@@ -10,35 +10,24 @@
 #include <ostream>
 #include <vector>
 
+#include "eckit/config/Configuration.h"
+
 #include "fv3jedi/GeometryIterator/GeometryIterator.h"
-#include "fv3jedi/Utilities/Traits.h"
 
 #include "ioda/ObsSpace.h"
 #include "ioda/ObsVector.h"
 
-#include "oops/base/ObsLocalizationBase.h"
 #include "oops/util/missingValues.h"
 
-#include "ufo/ObsTraits.h"
+#include "ufo/obslocalization/ObsLocalizationBase.h"
 
 namespace fv3jedi {
 
-/// \brief Options controlling vertical Brasnett observation space localization
-/// for snow DA.
-class ObsLocBrasnettParameters : public oops::ObsLocalizationParametersBase {
-  OOPS_CONCRETE_PARAMETERS(ObsLocBrasnettParameters, oops::ObsLocalizationParametersBase)
-
- public:
-  oops::Parameter<double> vertscale{"vertical lengthscale",
-                 "lengthscale of vertical localization in meters", 800., this};
-};
-
 /// Brasnett 99 observation space localization for snow DA (in vertical).
 /// https://doi.org/10.1175/1520-0450(1999)038<0726:AGAOSD>2.0.CO;2
-class ObsLocVerticalBrasnett: public oops::ObsLocalizationBase<Traits, ufo::ObsTraits> {
+class ObsLocVerticalBrasnett: public ufo::ObsLocalizationBase<GeometryIterator> {
  public:
-  typedef ObsLocBrasnettParameters Parameters_;
-  ObsLocVerticalBrasnett(const Parameters_ &, const ioda::ObsSpace &);
+  ObsLocVerticalBrasnett(const eckit::Configuration &, const ioda::ObsSpace &);
 
  protected:
   /// compute localization and update localization values in \p locvector
@@ -52,15 +41,15 @@ class ObsLocVerticalBrasnett: public oops::ObsLocalizationBase<Traits, ufo::ObsT
   double VertScale_;  //< vertical localization scale
 };
 // -----------------------------------------------------------------------------
-ObsLocVerticalBrasnett::ObsLocVerticalBrasnett(const Parameters_ & params,
-                                               const ioda::ObsSpace & obsspace):
-       obsHeight_(obsspace.nlocs()),
-       VertScale_(params.vertscale) {
+ObsLocVerticalBrasnett::ObsLocVerticalBrasnett(const eckit::Configuration & config,
+                                               const ioda::ObsSpace & obsspace)
+  : obsHeight_(obsspace.nlocs()), VertScale_(config.getDouble("vertical lengthscale"))
+{
   oops::Log::trace()<< "VerticalBrasnett localization with: vertical scale=" << VertScale_
                     << std::endl;
 
   // read height of measurements
-  obsspace.get_db("MetaData", "height", obsHeight_);
+  obsspace.get_db("MetaData", "stationElevation", obsHeight_);
 }
 // -----------------------------------------------------------------------------
 
@@ -75,7 +64,7 @@ void ObsLocVerticalBrasnett::computeLocalization(const GeometryIterator & geoite
   // compute vertical localization and multiply it by the previously computed localization
   // vloc=exp(- (dz/hfac)^2 )
   const size_t nvars = locvector.nvars();
-  const double missing = util::missingValue(double());
+  const double missing = util::missingValue<double>();
   for (size_t jloc = 0; jloc < locvector.nlocs(); ++jloc) {
     for (size_t jvar = 0; jvar < nvars; ++jvar) {
       if (locvector[jvar + jloc * nvars] != missing) {

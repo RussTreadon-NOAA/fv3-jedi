@@ -11,17 +11,20 @@
 #include <vector>
 
 #include "oops/base/ParameterTraitsVariables.h"
+#include "oops/base/Variables.h"
 #include "oops/util/parameters/OptionalParameter.h"
 #include "oops/util/parameters/Parameter.h"
 #include "oops/util/parameters/Parameters.h"
 #include "oops/util/parameters/RequiredParameter.h"
 
-#include "fv3jedi/FieldMetadata/FieldsMetadataParameters.h"
+#include "eckit/config/LocalConfiguration.h"
+
 #include "fv3jedi/IO/Utils/IOBase.h"
 #include "fv3jedi/State/State.h"
 
 namespace eckit {
   class Configuration;
+  class LocalConfiguration;
 }
 
 namespace fv3jedi {
@@ -39,18 +42,30 @@ class FMSinitParameters : public oops::Parameters {
 
 // -------------------------------------------------------------------------------------------------
 
+class TimeInvariantFieldsParameters : public oops::Parameters {
+  OOPS_CONCRETE_PARAMETERS(TimeInvariantFieldsParameters, Parameters)
+
+ public:
+  oops::RequiredParameter<StateParameters> stateFields{ "state fields", this };
+  oops::OptionalParameter<oops::Variables> derivedFields{ "derived fields", this };
+  oops::OptionalParameter<eckit::LocalConfiguration> fieldMasks{ "field masks", this };
+};
+
+// -------------------------------------------------------------------------------------------------
+
 class GeometryParameters : public oops::Parameters {
   OOPS_CONCRETE_PARAMETERS(GeometryParameters, Parameters)
 
  public:
   oops::OptionalParameter<std::string> akbk{ "akbk", this};
+  oops::OptionalParameter<std::string> ensMember{ "member_number", this};
   oops::Parameter<bool> doSchmidt{ "do_schmidt", false, this};
   oops::OptionalParameter<FMSinitParameters> fmsInit{ "fms initialization", this};
   oops::Parameter<bool> hydrostatic{ "hydrostatic", true, this};
-  oops::Parameter<std::string> interpMethod{ "interpolation method", "barycent", this};
   oops::Parameter<std::vector<int>> ioLayout{ "io_layout", {1, 1}, this};
   oops::Parameter<std::vector<int>> layout{ "layout", {1, 1}, this};
-  oops::Parameter<bool> logp{ "logp", false, this};
+  // vertical coordinate: sigma (default), logp or orography
+  oops::Parameter<std::string> vertCoord{ "vert coordinate", "sigma", this};
   oops::OptionalParameter<std::string> namelistFilename{"namelist filename", this};
   oops::Parameter<bool> nested{ "nested", false, this};
   oops::Parameter<int> ntiles{ "ntiles", 6, this};
@@ -59,17 +74,18 @@ class GeometryParameters : public oops::Parameters {
   oops::OptionalParameter<int> npz{ "npz", this};
   oops::Parameter<int> iterator_dimension{ "iterator dimension", 2, this};
   oops::Parameter<int> nwat{ "nwat", 1, this};
-  oops::OptionalParameter<StateParameters> timeInvariantFields{ "time invariant state fields",
-                                                                this};
+  oops::OptionalParameter<TimeInvariantFieldsParameters> timeInvariantFields{
+    "time invariant fields", this};
   oops::Parameter<bool> regional{ "regional", false, this};
   oops::Parameter<double> stretchFac{ "stretch_fac", 0.0, this};
   oops::Parameter<double> targetLat{ "target_lat", 0.0, this};
   oops::Parameter<double> targetLon{ "target_lon", 0.0, this};
   oops::Parameter<bool> useInternalNamelist{ "use internal namelist", false, this};
   oops::Parameter<bool> writeGeom{ "write geom", false, this};
-
-  // Include FieldsMetadataParameters
-  FieldsMetadataParameters fieldsMetadataParameters{this};
+  oops::Parameter<bool> writeGmsh{ "write to gmsh", false, this};
+  oops::Parameter<std::string> writeGmshFilename{ "gmsh filename", "out.msh", this};
+  oops::OptionalParameter<eckit::LocalConfiguration> fieldInterpMethods{
+    "field interpolation methods", this };
 };
 
 // -------------------------------------------------------------------------------------------------

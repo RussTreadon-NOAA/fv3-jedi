@@ -1,4 +1,4 @@
-! (C) Copyright 2017-2021 UCAR
+! (C) Copyright 2017-2023 UCAR
 !
 ! This software is licensed under the terms of the Apache Licence Version 2.0
 ! which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
@@ -12,33 +12,32 @@ use mpi
 use string_f_c_mod
 
 ! atlas uses
-use atlas_module, only: atlas_field, atlas_fieldset, atlas_integer, atlas_real, atlas_functionspace
+use atlas_module,               only: atlas_field, atlas_fieldset, &
+                                      atlas_integer, atlas_real, atlas_functionspace
 
 ! fckit uses
 use fckit_mpi_module,           only: fckit_mpi_comm
 use fckit_configuration_module, only: fckit_configuration
 
 ! fms uses
-use fms_io_mod,                 only: set_domain, nullify_domain
 use fms_mod,                    only: fms_init
 use mpp_mod,                    only: mpp_exit, mpp_pe, mpp_npes, mpp_error, FATAL, NOTE
 use mpp_domains_mod,            only: domain2D, mpp_deallocate_domain, mpp_define_layout, &
                                       mpp_define_mosaic, mpp_define_io_domain, mpp_domains_exit, &
                                       mpp_domains_set_stack_size
+use ensemble_manager_mod,       only: get_ensemble_id,get_ensemble_size
 use field_manager_mod,          only: fm_string_len, field_manager_init
 
 ! fv3 uses
-use fv_arrays_mod,              only: fv_atmos_type, deallocate_fv_atmos_type
+use fv3jedi_fv3_arrays_mod,     only: fv_atmos_type, deallocate_fv_atmos_type
+use fv3jedi_fv3_control_mod,    only: fv_control_init
 
 ! fv3jedi uses
-use fields_metadata_mod,         only: fields_metadata, field_metadata
-use fv3jedi_constants_mod,       only: ps, rad2deg, kap1, kapr
-use fv3jedi_kinds_mod,           only: kind_int, kind_real
-use fv3jedi_netcdf_utils_mod,    only: nccheck
-use fv_init_mod,                 only: fv_init
-use fv3jedi_fmsnamelist_mod,     only: fv3jedi_fmsnamelist
-use fv3jedi_io_fms_mod,          only: fv3jedi_io_fms, read_fields
-use fv3jedi_field_mod,           only: fv3jedi_field
+use fields_metadata_mod,        only: fields_metadata
+use fv3jedi_constants_mod,      only: constant
+use fv3jedi_kinds_mod,          only: kind_int, kind_real
+use fv3jedi_netcdf_utils_mod,   only: nccheck
+use fv3jedi_fmsnamelist_mod,    only: fv3jedi_fmsnamelist
 
 implicit none
 private
@@ -57,7 +56,7 @@ type :: fv3jedi_geom
   real(kind=kind_real) :: ptop                                                      !Pressure at top of domain
   type(domain2D) :: domain_fix                                                      !MPP domain
   type(domain2D), pointer :: domain                                                 !MPP domain
-  character(len=10) :: interp_method                                                !Interpolation type
+  real(kind=kind_real) :: stretch_fac, target_lon, target_lat
   real(kind=kind_real), allocatable, dimension(:)       :: ak, bk                   !Model level coefficients
   real(kind=kind_real), allocatable, dimension(:,:)     :: grid_lon, grid_lat       !Lat/lon centers
   real(kind=kind_real), allocatable, dimension(:,:)     :: egrid_lon, egrid_lat     !Lat/lon edges
@@ -71,8 +70,10 @@ type :: fv3jedi_geom
   real(kind=kind_real), allocatable, dimension(:,:,:,:) :: es, ew
   real(kind=kind_real), allocatable, dimension(:,:)     :: a11, a12, a21, a22
   type(fckit_mpi_comm) :: f_comm
-  type(fields_metadata) :: fields
-  type(atlas_fieldset) :: extra_fields
+  type(fields_metadata) :: fmd
+  type(atlas_fieldset) :: geometry_fields
+  ! Vertical Coordinate
+  real(kind=kind_real), allocatable, dimension(:)       :: vCoord                   !Model vertical coordinate
   ! For D to (A to) C grid
   real(kind=kind_real), allocatable, dimension(:,:)     :: rarea
   real(kind=kind_real), allocatable, dimension(:,:,:)   :: sin_sg
@@ -86,22 +87,37 @@ type :: fv3jedi_geom
   logical :: ne_corner, se_corner, sw_corner, nw_corner
   logical :: nested = .false.
   logical :: bounded_domain = .false.
-  logical :: logp = .false.
+  character(len=10) :: vertcoord_type
 
+  integer :: ensNum
   integer :: grid_type = 0
   logical :: dord4 = .true.
   type(atlas_functionspace) :: afunctionspace
-  type(atlas_functionspace) :: afunctionspace_incl_halo
+
+  ! Configuration that holds the masks to be applied to each field
+  type(fckit_configuration) :: field_masks
+  type(fckit_configuration) :: field_interp_methods
 
   contains
     procedure, public :: create
     procedure, public :: clone
     procedure, public :: delete
-    procedure, public :: set_lonlat
-    procedure, public :: set_and_fill_extra_fields
-    procedure, public :: ngrid_including_halo
-    procedure, public :: trim_fv3_grid_to_jedi_interp_grid
-    procedure, public :: trim_fv3_grid_to_jedi_interp_grid_ad
+    procedure, public :: is_equal
+    procedure, public :: set_and_fill_geometry_fields
+    procedure, public :: get_data
+    procedure, public :: get_num_nodes_and_elements
+    procedure, public :: get_coords_and_connectivities
+
+    generic, public :: fv3_nodes_to_atlas_nodes => fv3_nodes_to_atlas_nodes_r, &
+                                                   fv3_nodes_to_atlas_nodes_i
+
+    procedure, private :: get_num_nodes_and_elements_global
+    procedure, private :: get_num_nodes_and_elements_regional
+    procedure, private :: get_coords_and_connectivities_global
+    procedure, private :: get_coords_and_connectivities_regional
+    procedure, private :: fv3_nodes_to_atlas_nodes_i
+    procedure, private :: fv3_nodes_to_atlas_nodes_r
+
 end type fv3jedi_geom
 
 ! --------------------------------------------------------------------------------------------------
@@ -145,26 +161,28 @@ end subroutine initialize
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine create(self, conf, comm, nlevs)
+subroutine create(self, conf, comm, npx, npy, npz)
 
 !Arguments
 class(fv3jedi_geom), target, intent(inout) :: self
 type(fckit_configuration),   intent(in)    :: conf
 type(fckit_mpi_comm),        intent(in)    :: comm
-integer,                     intent(out)   :: nlevs
+integer,                     intent(out)   :: npx
+integer,                     intent(out)   :: npy
+integer,                     intent(out)   :: npz
 
 !Locals
 character(len=256)                    :: file_akbk
 type(fv_atmos_type), allocatable      :: Atm(:)
 logical, allocatable                  :: grids_on_this_pe(:)
-integer                               :: i, j, jj, gtile
+integer                               :: i, j, jj, this_grid
 integer                               :: p_split = 1
 integer                               :: ncstat, ncid, akvarid, bkvarid, readdim, dcount
 integer, dimension(nf90_max_var_dims) :: dimids, dimlens
 
 character(len=:), allocatable :: str
+real(kind=kind_real) :: sf, t_lon, t_lat
 logical :: do_write_geom = .false.
-logical :: logp = .false.
 integer :: iterator_dimension = 2
 
 type(fv3jedi_fmsnamelist) :: fmsnamelist
@@ -173,13 +191,31 @@ type(fv3jedi_fmsnamelist) :: fmsnamelist
 ! ------------------------------------
 self%f_comm = comm
 
-! Interpolation type
-! ------------------
-call conf%get_or_die("interpolation method",str)
-self%interp_method = str
-deallocate(str)
+! Initialize field_masks config
+! -----------------------------
+self%field_masks = fckit_configuration()
 
-call conf%get_or_die("iterator dimension", iterator_dimension)
+! User specified interpolation methods for fields
+! -----------------------------------------------
+self%field_interp_methods = fckit_configuration()
+if (conf%has("field interpolation methods")) then
+  call conf%get_or_die("field interpolation methods", self%field_interp_methods)
+endif
+
+! Stretch factor, target_lon, and target_lat
+! ------------------------------------------
+sf = 0
+t_lon = 0.0
+t_lat = 0.0
+if (conf%has("stretch_fac")) call conf%get_or_die("stretch_fac",sf)
+if (conf%has("target_lon"))  call conf%get_or_die("target_lon",t_lon)
+if (conf%has("target_lat"))  call conf%get_or_die("target_lat",t_lat)
+self%stretch_fac = sf
+self%target_lon = t_lon
+self%target_lat = t_lat
+
+iterator_dimension = 2
+if (conf%has("iterator dimension")) call conf%get_or_die("iterator dimension", iterator_dimension)
 self%iterator_dimension = iterator_dimension
 
 ! Update the fms namelist with this Geometry
@@ -188,7 +224,11 @@ call fmsnamelist%replace_namelist(conf)
 
 !Intialize using the model setup routine
 ! --------------------------------------
-call fv_init(Atm, 300.0_kind_real, grids_on_this_pe, p_split, gtile, .true.)
+call fv_control_init(Atm, 300.0_kind_real, this_grid, grids_on_this_pe, p_split, &
+                     skip_nml_read_in=.true.)
+
+! Sanity check
+if (this_grid .ne. 1) call abor1_ftn("Geometry not ready for ngrid > 1")
 
 ! Copy relevant contents of Atm
 ! -----------------------------
@@ -203,14 +243,16 @@ self%jsc = Atm(1)%bd%jsc
 self%jec = Atm(1)%bd%jec
 self%kec = Atm(1)%npz
 
-self%ntile  = gtile
+self%ntile  = Atm(1)%global_tile
 self%ntiles = Atm(1)%flagstruct%ntiles
 
 self%npx = Atm(1)%npx
 self%npy = Atm(1)%npy
 self%npz = Atm(1)%npz
 
-nlevs = self%npz
+npx = self%npx
+npy = self%npy
+npz = self%npz
 
 self%layout(1) = Atm(1)%layout(1)
 self%layout(2) = Atm(1)%layout(2)
@@ -305,7 +347,6 @@ endif
 
 ! Arrays from the Atm Structure
 ! -----------------------------
-
 self%grid_lon  = real(Atm(1)%gridstruct%agrid_64(:,:,1),kind_real)
 self%grid_lat  = real(Atm(1)%gridstruct%agrid_64(:,:,2),kind_real)
 self%egrid_lon = real(Atm(1)%gridstruct%grid_64(:,:,1),kind_real)
@@ -350,8 +391,14 @@ self%nw_corner = Atm(1)%gridstruct%nw_corner
 self%nested    = Atm(1)%gridstruct%nested
 self%bounded_domain =  Atm(1)%gridstruct%bounded_domain
 
-call conf%get_or_die("logp",logp)
-self%logp = logp
+allocate(self%vCoord(self%npz))
+
+self%vertcoord_type = 'sigma'
+if (conf%has("vert coordinate")) then
+  call conf%get_or_die("vert coordinate", str)
+  self%vertcoord_type = str
+  deallocate(str)
+endif
 
 !Unstructured lat/lon
 self%ngrid = (self%iec-self%isc+1)*(self%jec-self%jsc+1)
@@ -380,11 +427,11 @@ call setup_domain( self%domain_fix, self%npx-1, self%npy-1, &
                    self%ntiles, self%layout, self%io_layout, 3)
 
 self%domain => self%domain_fix
-call nullify_domain()
 
 ! Optionally write the geometry to file
 ! -------------------------------------
-call conf%get_or_die("write geom",do_write_geom)
+do_write_geom = .false.
+if (conf%has("write geom")) call conf%get_or_die("write geom",do_write_geom)
 
 if (do_write_geom) then
   call write_geom(self)
@@ -398,11 +445,11 @@ end subroutine create
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine clone(self, other, fields)
+subroutine clone(self, other, fmd)
 
 class(fv3jedi_geom),        intent(inout) :: self
 type(fv3jedi_geom), target, intent(in)    :: other
-type(fields_metadata),      intent(in)    :: fields
+type(fields_metadata),      intent(in)    :: fmd
 
 allocate(self%ak(other%npz+1) )
 allocate(self%bk(other%npz+1) )
@@ -492,7 +539,9 @@ self%a12             = other%a12
 self%a21             = other%a21
 self%a22             = other%a22
 self%f_comm          = other%f_comm
-self%interp_method   = other%interp_method
+self%stretch_fac     = other%stretch_fac
+self%target_lon      = other%target_lon
+self%target_lat      = other%target_lat
 
 self%rarea     = other%rarea
 self%sin_sg    = other%sin_sg
@@ -512,11 +561,10 @@ self%nw_corner = other%nw_corner
 self%domain => other%domain
 
 self%afunctionspace = atlas_functionspace(other%afunctionspace%c_ptr())
-self%afunctionspace_incl_halo = atlas_functionspace(other%afunctionspace_incl_halo%c_ptr())
 
-self%extra_fields = atlas_fieldset(other%extra_fields%c_ptr())
+self%geometry_fields = atlas_fieldset(other%geometry_fields%c_ptr())
 
-self%fields = fields
+self%fmd = fmd
 
 self%lat_us = other%lat_us
 self%lon_us = other%lon_us
@@ -524,7 +572,11 @@ self%lon_us = other%lon_us
 self%nested = other%nested
 self%bounded_domain = other%bounded_domain
 
-self%logp = other%logp
+self%vertcoord_type = other%vertcoord_type
+
+self%field_masks = other%field_masks
+
+self%field_interp_methods = other%field_interp_methods
 
 end subroutine clone
 
@@ -578,318 +630,107 @@ deallocate(self%lon_us)
 !call mpp_deallocate_domain(self%domain_fix)
 
 call self%afunctionspace%final()
-call self%afunctionspace_incl_halo%final()
-
-! Could finalize the fms routines. Possibly needs to be done only when key = 0
-!call fms_io_exit
-!call mpp_domains_exit
-!call mpp_exit
+call self%geometry_fields%final()
 
 end subroutine delete
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine set_lonlat(self, afieldset, include_halo)
+subroutine is_equal(self, other, equal)
 
-!Arguments
-class(fv3jedi_geom),  intent(inout) :: self
-type(atlas_fieldset), intent(inout) :: afieldset
-logical,              intent(in) :: include_halo
+class(fv3jedi_geom), intent(in) :: self
+class(fv3jedi_geom), intent(in) :: other
+logical, intent(out) :: equal
 
-!Locals
-real(kind_real), pointer :: real_ptr(:,:)
-type(atlas_field) :: afield, afield_incl_halo
-integer :: ngrid
+equal = .false.
 
-ngrid = self%ngrid
+! At the moment, equality is based on the fundamental integer-type members; could make more
+! rigorous by comparing more data
+if (self%npx == other%npx .and. self%npy == other%npy .and. self%npz == other%npz &
+    .and. self%ntile == other%ntile .and. self%ntiles == other%ntiles &
+    .and. self%isc == other%isc .and. self%iec == other%iec &
+    .and. self%jsc == other%jsc .and. self%jec == other%jec &
+    .and. self%kec == other%kec &
+    .and. self%layout(1) == other%layout(1) .and. self%layout(2) == other%layout(2) &
+    .and. self%layout(1) == other%layout(1) .and. self%layout(2) == other%layout(2) &
+    .and. self%stretch_fac == other%stretch_fac &
+    .and. self%target_lon == other%target_lon &
+    .and. self%target_lat == other%target_lat) then
+  equal = .true.
+end if
 
-! Create lon/lat field
-afield = atlas_field(name="lonlat", kind=atlas_real(kind_real), shape=(/2,ngrid/))
-call afield%data(real_ptr)
-real_ptr(1,:) = rad2deg*reshape(self%grid_lon(self%isc:self%iec, self%jsc:self%jec),(/ngrid/))
-real_ptr(2,:) = rad2deg*reshape(self%grid_lat(self%isc:self%iec, self%jsc:self%jec),(/ngrid/))
-call afieldset%add(afield)
-
-if (include_halo) then
-  nullify(real_ptr)
-  ngrid = ngrid_including_halo(self)
-
-  ! Create an additional lon/lat field containing owned points (as above) and also halo
-  afield_incl_halo = atlas_field(name="lonlat_including_halo", kind=atlas_real(kind_real), &
-                                 shape=(/2,ngrid/))
-  call afield_incl_halo%data(real_ptr)
-  call trim_fv3_grid_to_jedi_interp_grid(self, self%grid_lon, real_ptr(1,:))
-  call trim_fv3_grid_to_jedi_interp_grid(self, self%grid_lat, real_ptr(2,:))
-  ! Convert rad -> degree
-  real_ptr(:,:) = rad2deg * real_ptr(:,:)
-  call afieldset%add(afield_incl_halo)
-endif
-
-end subroutine set_lonlat
+end subroutine is_equal
 
 ! --------------------------------------------------------------------------------------------------
 
-subroutine set_and_fill_extra_fields(self, afieldset)
+subroutine set_and_fill_geometry_fields(self, afieldset, field_masks)
 
 !Arguments
-class(fv3jedi_geom),  intent(inout) :: self
-type(atlas_fieldset), intent(inout) :: afieldset
+class(fv3jedi_geom),       intent(inout) :: self
+type(atlas_fieldset),      intent(inout) :: afieldset
+type(fckit_configuration), intent(in)    :: field_masks
 
 !Locals
-integer :: jl, ngrid
+type(atlas_field) :: afield, afield2
+integer :: jl
 integer, pointer :: int_ptr(:,:)
-real(kind=kind_real) :: sigmaup, sigmadn
-real(kind=kind_real), pointer :: real_ptr(:,:)
-real(kind=kind_real), allocatable :: hmask_1(:), hmask_2(:,:)
-type(atlas_field) :: afield
-real(kind=kind_real) :: plevli(self%npz+1),logp(self%npz)
+real(kind=kind_real), pointer :: real_ptr(:,:), real_ptr2(:,:)
+real(kind=kind_real) :: sigmaup, sigmadn, ps
+real(kind=kind_real) :: logp(self%npz)
 
-! Assign extra_fields variable
-self%extra_fields = afieldset
+! Assign geometry_fields variable
+self%geometry_fields = afieldset
 
-! Prepare halo mask
-! This could be simplified by taking advantage of the known ordering of points in the result of
-! trim_fv3_grid_to_jedi_interp_grid, where owned points (mask=1) come first, and masked points
-! (mask=0) come second. But this below is more general, and would work for any implementation.
-ngrid = ngrid_including_halo(self)
-allocate(hmask_1(ngrid))
-allocate(hmask_2(self%isd:self%ied,self%jsd:self%jed))
-hmask_2 = 0.0_kind_real
-hmask_2(self%isc:self%iec,self%jsc:self%jec) = 1.0_kind_real
-call trim_fv3_grid_to_jedi_interp_grid(self, hmask_2, hmask_1)
+! Save the config containing choice of field masks
+self%field_masks = field_masks
 
-! Add halo mask
-afield = self%afunctionspace_incl_halo%create_field(name='hmask', kind=atlas_integer(kind_int), levels=1)
+! Add owned vs halo/BC field
+afield = self%afunctionspace%create_field(name='owned', kind=atlas_integer(kind_int), levels=1)
 call afield%data(int_ptr)
-int_ptr(1,:) = int(hmask_1)
+int_ptr(1, :) = 0
+int_ptr(1, 1:self%ngrid) = 1
 call afieldset%add(afield)
-call afield%final()
-
-! Release memory
-deallocate(hmask_1)
-deallocate(hmask_2)
 
 ! Add area
-afield = self%afunctionspace_incl_halo%create_field(name='area', kind=atlas_real(kind_real), levels=1)
+afield = self%afunctionspace%create_field(name='area', kind=atlas_real(kind_real), levels=1)
 call afield%data(real_ptr)
-call trim_fv3_grid_to_jedi_interp_grid(self, self%area, real_ptr(1,:))
+real_ptr(1, :) = -1.0_kind_real
+real_ptr(1, 1:self%ngrid) = reshape(self%area(self%isc:self%iec, self%jsc:self%jec), (/self%ngrid/))
 call afieldset%add(afield)
-call afield%final()
 
 ! Add vertical unit
-afield = self%afunctionspace_incl_halo%create_field(name='vunit', kind=atlas_real(kind_real), levels=self%npz)
-call afield%data(real_ptr)
-if (.not. self%logp) then
+ps = constant('ps')
+if (trim(self%vertcoord_type) == 'sigma') then
+   afield = self%afunctionspace%create_field(name='vert_coord', kind=atlas_real(kind_real), levels=self%npz)
+   call afield%data(real_ptr)
    do jl=1,self%npz
       sigmaup = self%ak(jl+1)/ps+self%bk(jl+1) ! si are now sigmas
       sigmadn = self%ak(jl  )/ps+self%bk(jl  )
       real_ptr(jl,:) = 0.5*(sigmaup+sigmadn) ! 'fake' sigma coordinates
    enddo
-else
+else if (trim(self%vertcoord_type) == 'logp') then
+   afield = self%afunctionspace%create_field(name='vert_coord', kind=atlas_real(kind_real), levels=self%npz)
+   call afield%data(real_ptr)
    call getVerticalCoordLogP(self,logp,self%npz,ps)
    do jl=1,self%npz
       real_ptr(jl,:) = logp(jl)
    enddo
+else if (trim(self%vertcoord_type) == 'orography') then
+   !> The orography vertical coordinate can only be used for 2D fields, so allocation here is
+   !> for one level. This option is not compatible with 3D fields.
+   afield = self%afunctionspace%create_field(name='vert_coord', kind=atlas_real(kind_real), levels=1)
+   call afield%data(real_ptr)
+   afield2 = afieldset%field('filtered_orography')
+   call afield2%data(real_ptr2)
+   real_ptr(1,:) = real_ptr2(1,:)
+else
+   call abor1_ftn('fv3jedi_geom_mod%set_and_fill_geometry_fields: unknown vertical coordinate type')
 endif
 call afieldset%add(afield)
 call afield%final()
+call afield2%final()
 
-end subroutine set_and_fill_extra_fields
-
-! --------------------------------------------------------------------------------------------------
-
-! A helper function for the size of the grid constructed by trim_fv3_grid_to_jedi_interp_grid; for
-! details, see that subroutine's documentation.
-function ngrid_including_halo(self)
-  class(fv3jedi_geom), intent(in) :: self
-  integer :: ngrid_including_halo
-
-  logical :: remove_sw_corner, remove_se_corner, remove_nw_corner, remove_ne_corner
-  integer :: halo_width
-
-  ! Identify which corners of the grid patch are corners of the cubed sphere:
-  remove_sw_corner = (self%isc == 1 .and. self%jsc == 1)
-  remove_se_corner = (self%iec == self%npx-1 .and. self%jsc == 1)
-  remove_nw_corner = (self%isc == 1 .and. self%jec == self%npy-1)
-  remove_ne_corner = (self%iec == self%npx-1 .and. self%jec == self%npy-1)
-
-  ! In the code below, we assume halos have the same width all around the grid patch. This could
-  ! be generalized fairly easily, but for now we just check the assumption:
-  halo_width = self%ied - self%iec
-  if (halo_width /= self%isc - self%isd .or. halo_width /= self%jed - self%jec &
-      .or. halo_width /= self%jsc - self%jsd) then
-    call abor1_ftn("fv3jedi_geom_mod: code must be generalized to use non-uniform halo widths")
-  endif
-
-  ! Total size of grid to keep is: local grid + 4 edge halos + <kept corner halos>
-  ! This is easier to compute as: full grid - <removed corner halos>
-  ngrid_including_halo = (self%ied - self%isd + 1) * (self%jed - self%jsd + 1)
-  if (remove_sw_corner) ngrid_including_halo = ngrid_including_halo - halo_width*halo_width
-  if (remove_se_corner) ngrid_including_halo = ngrid_including_halo - halo_width*halo_width
-  if (remove_nw_corner) ngrid_including_halo = ngrid_including_halo - halo_width*halo_width
-  if (remove_ne_corner) ngrid_including_halo = ngrid_including_halo - halo_width*halo_width
-end function ngrid_including_halo
-
-! --------------------------------------------------------------------------------------------------
-
-! The fv3jedi modules interfacing with FV3 give access to grid data with full halos
-! (edges + corners) for FV3 quantities like coordinates and fields.
-!
-! This is almost always what we want as the interpolation source grid, except that the FV3 corner
-! halo points are meaningless at the corner of the cubed-sphere grids, where the 6 "cube faces"
-! meet. This is because at this location the coordinates kink so the two edge halos touch.
-!
-! This subroutine takes FV3 grid data and cuts out the meaningless data from halo corner regions at
-! cubed-sphere grid corners. The result is the source grid needed for JEDI interpolations. Because
-! the result has unpredictable structure, the field is stored in a 1D array. This function ensures
-! all fields are represented in 1D with the same ordering.
-subroutine trim_fv3_grid_to_jedi_interp_grid(self, fv3_halo, interp_halo)
-  class(fv3jedi_geom), intent(in) :: self
-  real(kind_real), intent(in) :: fv3_halo(self%isd:self%ied, self%jsd:self%jed)
-  real(kind_real), intent(inout) :: interp_halo(:)
-
-  integer :: a, b, ngrid_to_keep, nsection, halo_width
-  logical :: remove_sw_corner, remove_se_corner, remove_nw_corner, remove_ne_corner
-
-  ! Check inputs are correctly sized
-  ngrid_to_keep = ngrid_including_halo(self)
-  if (ngrid_to_keep /= size(interp_halo)) then
-    call abor1_ftn("fv3jedi_geom_mod: bad array dimension for interp_halo")
-  endif
-
-  ! First, copy ngrid owned data points
-  nsection = self%ngrid
-  a = 1
-  b = nsection
-  interp_halo(a:b) = reshape(fv3_halo(self%isc:self%iec, self%jsc:self%jec), (/nsection/))
-
-  ! In ngrid_including_halo, halo_width was checked to be uniform
-  halo_width = self%ied - self%iec
-
-  ! Copy west + east edge halos
-  nsection = halo_width * (self%jec - self%jsc + 1)
-  a = b + 1
-  b = b + nsection
-  interp_halo(a:b) = reshape(fv3_halo(self%isd:self%isc-1, self%jsc:self%jec), (/nsection/))
-  a = b + 1
-  b = b + nsection
-  interp_halo(a:b) = reshape(fv3_halo(self%iec+1:self%ied, self%jsc:self%jec), (/nsection/))
-
-  ! Copy south + north edge halos
-  nsection = halo_width * (self%iec - self%isc + 1)
-  a = b + 1
-  b = b + nsection
-  interp_halo(a:b) = reshape(fv3_halo(self%isc:self%iec, self%jsd:self%jsc-1), (/nsection/))
-  a = b + 1
-  b = b + nsection
-  interp_halo(a:b) = reshape(fv3_halo(self%isc:self%iec, self%jec+1:self%jed), (/nsection/))
-
-  remove_sw_corner = (self%isc == 1 .and. self%jsc == 1)
-  remove_se_corner = (self%iec == self%npx-1 .and. self%jsc == 1)
-  remove_nw_corner = (self%isc == 1 .and. self%jec == self%npy-1)
-  remove_ne_corner = (self%iec == self%npx-1 .and. self%jec == self%npy-1)
-
-  ! Copy corner halos as needed
-  nsection = halo_width * halo_width
-  if (.not. remove_sw_corner) then
-    a = b + 1
-    b = b + nsection
-    interp_halo(a:b) = reshape(fv3_halo(self%isd:self%isc-1, self%jsd:self%jsc-1), (/nsection/))
-  endif
-  if (.not. remove_se_corner) then
-    a = b + 1
-    b = b + nsection
-    interp_halo(a:b) = reshape(fv3_halo(self%iec+1:self%ied, self%jsd:self%jsc-1), (/nsection/))
-  endif
-  if (.not. remove_nw_corner) then
-    a = b + 1
-    b = b + nsection
-    interp_halo(a:b) = reshape(fv3_halo(self%isd:self%isc-1, self%jec+1:self%jed), (/nsection/))
-  endif
-  if (.not. remove_ne_corner) then
-    a = b + 1
-    b = b + nsection
-    interp_halo(a:b) = reshape(fv3_halo(self%iec+1:self%ied, self%jec+1:self%jed), (/nsection/))
-  endif
-endsubroutine trim_fv3_grid_to_jedi_interp_grid
-
-! --------------------------------------------------------------------------------------------------
-
-! Adjoint of trim_fv3_grid_to_jedi_interp_grid: takes 1D data (ordered with owned points first,
-! then halo points second), and unpacks into a 2D fv3-jedi grid. If the grid is at the corner of
-! the cubed sphere, such that there is no input data to fill the "corner" halo with, then set
-! those points to 0.
-subroutine trim_fv3_grid_to_jedi_interp_grid_ad(self, fv3_halo, interp_halo)
-  class(fv3jedi_geom), intent(in) :: self
-  real(kind_real), intent(inout) :: fv3_halo(self%isd:self%ied, self%jsd:self%jed)
-  real(kind_real), intent(in) :: interp_halo(:)
-
-  integer :: a, b, ngrid_to_keep, halo_width, nsection
-  logical :: remove_sw_corner, remove_se_corner, remove_nw_corner, remove_ne_corner
-
-  ! Check inputs are correctly sized
-  ngrid_to_keep = ngrid_including_halo(self)
-  if (ngrid_to_keep /= size(interp_halo)) then
-    call abor1_ftn("fv3jedi_geom_mod: bad array dimension for interp_halo")
-  endif
-
-  fv3_halo(:,:) = 0.0
-
-  ! First, copy ngrid owned data points
-  nsection = self%ngrid
-  a = 1
-  b = nsection
-  fv3_halo(self%isc:self%iec, self%jsc:self%jec) = reshape(interp_halo(a:b), (/self%iec - self%isc + 1, self%jec - self%jsc + 1/))
-
-  ! In ngrid_including_halo, halo_width was checked to be uniform
-  halo_width = self%ied - self%iec
-
-  ! Copy west + east edge halos
-  nsection = halo_width * (self%jec - self%jsc + 1)
-  a = b + 1
-  b = b + nsection
-  fv3_halo(self%isd:self%isc-1, self%jsc:self%jec) = reshape(interp_halo(a:b), (/self%isc - self%isd, self%jec - self%jsc + 1/))
-  a = b + 1
-  b = b + nsection
-  fv3_halo(self%iec+1:self%ied, self%jsc:self%jec) = reshape(interp_halo(a:b), (/self%ied - self%iec, self%jec - self%jsc + 1/))
-
-  ! Copy south + north edge halos
-  nsection = halo_width * (self%iec - self%isc + 1)
-  a = b + 1
-  b = b + nsection
-  fv3_halo(self%isc:self%iec, self%jsd:self%jsc-1) = reshape(interp_halo(a:b), (/self%iec - self%isc + 1, self%jsc - self%jsd/))
-  a = b + 1
-  b = b + nsection
-  fv3_halo(self%isc:self%iec, self%jec+1:self%jed) = reshape(interp_halo(a:b), (/self%iec - self%isc + 1, self%jsc - self%jsd/))
-
-  remove_sw_corner = (self%isc == 1 .and. self%jsc == 1)
-  remove_se_corner = (self%iec == self%npx-1 .and. self%jsc == 1)
-  remove_nw_corner = (self%isc == 1 .and. self%jec == self%npy-1)
-  remove_ne_corner = (self%iec == self%npx-1 .and. self%jec == self%npy-1)
-
-  ! Copy corner halos as needed
-  nsection = halo_width * halo_width
-  if (.not. remove_sw_corner) then
-    a = b + 1
-    b = b + nsection
-    fv3_halo(self%isd:self%isc-1, self%jsd:self%jsc-1) = reshape(interp_halo(a:b), (/self%isc - self%isd, self%jsc - self%jsd/))
-  endif
-  if (.not. remove_se_corner) then
-    a = b + 1
-    b = b + nsection
-    fv3_halo(self%iec+1:self%ied, self%jsd:self%jsc-1) = reshape(interp_halo(a:b), (/self%ied - self%iec, self%jsc - self%jsd/))
-  endif
-  if (.not. remove_nw_corner) then
-    a = b + 1
-    b = b + nsection
-    fv3_halo(self%isd:self%isc-1, self%jec+1:self%jed) = reshape(interp_halo(a:b), (/self%isc - self%isd, self%jed - self%jec/))
-  endif
-  if (.not. remove_ne_corner) then
-    a = b + 1
-    b = b + nsection
-    fv3_halo(self%iec+1:self%ied, self%jec+1:self%jed) = reshape(interp_halo(a:b), (/self%ied - self%iec, self%jed - self%jec/))
-  endif
-endsubroutine trim_fv3_grid_to_jedi_interp_grid_ad
+end subroutine set_and_fill_geometry_fields
 
 ! --------------------------------------------------------------------------------------------------
 
@@ -908,11 +749,12 @@ subroutine setup_domain(domain, nx, ny, ntiles, layout_in, io_layout, halo)
  integer, allocatable, dimension(:)   :: tile1, tile2
  integer, allocatable, dimension(:)   :: istart1, iend1, jstart1, jend1
  integer, allocatable, dimension(:)   :: istart2, iend2, jstart2, jend2
- integer, allocatable :: tile_id(:)
+ integer, allocatable :: tile_id(:), ensNum
  logical :: is_symmetry
 
   pe = mpp_pe()
   npes = mpp_npes()
+  ensNum = get_ensemble_id()
 
   if (mod(npes,ntiles) /= 0) then
      call mpp_error(NOTE, "setup_domain: npes can not be divided by ntiles")
@@ -949,9 +791,10 @@ subroutine setup_domain(domain, nx, ny, ntiles, layout_in, io_layout, halo)
   do n = 1, ntiles
      global_indices(:,n) = (/1,nx,1,ny/)
      layout2D(:,n)       = layout
-     pe_start(n)         = (n-1)*npes_per_tile
-     pe_end(n)           = n*npes_per_tile-1
+     pe_start(n)         = (n-1)*npes_per_tile + (ensNum -1) * 6 * npes_per_tile
+     pe_end(n)           = n*npes_per_tile-1 + (ensNum -1) * 6 * npes_per_tile
   enddo
+
   num_alloc = max(1, num_contact)
   ! this code copied from domain_decomp in fv_mp_mod.f90
   allocate(tile1(num_alloc), tile2(num_alloc) )
@@ -1023,7 +866,7 @@ subroutine setup_domain(domain, nx, ny, ntiles, layout_in, io_layout, halo)
                          symmetry=is_symmetry, tile_id=tile_id, &
                          name='cubic_grid')
 
-  if (io_layout(1) /= 1 .or. io_layout(2) /= 1) call mpp_define_io_domain(domain, io_layout)
+  call mpp_define_io_domain(domain, io_layout)
 
   deallocate(pe_start, pe_end)
   deallocate(layout2D, global_indices)
@@ -1144,11 +987,17 @@ end subroutine write_geom
 ! 1d pressure_edge to pressure_mid
 !----------------------------------------------------------------------------
 
-subroutine pedges2pmidlayer(npz,ptype,pe1d,p1d)
+subroutine pedges2pmidlayer(npz,ptype,pe1d,kappa,p1d)
  integer,              intent(in)  :: npz       !number of model layers
  character(len=*),     intent(in)  :: ptype     !midlayer pressure definition: 'average' or 'Philips'
  real(kind=kind_real), intent(in)  :: pe1d(npz+1) !pressure edge
+ real(kind=kind_real), intent(in)  :: kappa
  real(kind=kind_real), intent(out) :: p1d(npz)    !pressure mid
+
+ real(kind=kind_real) :: kap1, kapr
+
+ kap1 = kappa + 1.0_kind_real
+ kapr = 1.0_kind_real/kappa
 
  select case (ptype)
    case('Philips')
@@ -1171,7 +1020,7 @@ subroutine getVerticalCoord(self, vc, npz, psurf)
   real(kind=kind_real), intent(in) :: psurf
   real(kind=kind_real), intent(out) :: vc(npz)
 
-  real(kind=kind_real) :: plevli(npz+1), p(npz)
+  real(kind=kind_real) :: plevli(npz+1), p(npz), kappa
   integer :: k
 
   ! compute interface pressure
@@ -1179,8 +1028,11 @@ subroutine getVerticalCoord(self, vc, npz, psurf)
     plevli(k) = self%ak(k) + self%bk(k)*psurf
   enddo
 
+  ! get kappa
+  kappa = constant('kappa')
+
   ! compute presure at mid level and convert it to logp
-  call pedges2pmidlayer(npz,'Philips',plevli,vc)
+  call pedges2pmidlayer(npz,'Philips',plevli,kappa,vc)
 
 end subroutine getVerticalCoord
 
@@ -1200,6 +1052,800 @@ subroutine getVerticalCoordLogP(self, vc, npz, psurf)
   vc = - log(p)
 
 end subroutine getVerticalCoordLogP
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine get_data(self, ak, bk, ptop)
+
+!Arguments
+class(fv3jedi_geom),  intent(in)  :: self
+real(kind=kind_real), intent(out) :: ak(self%npz+1)
+real(kind=kind_real), intent(out) :: bk(self%npz+1)
+real(kind=kind_real), intent(out) :: ptop
+
+! Set outputs
+ak = self%ak
+bk = self%bk
+ptop = self%ptop
+
+end subroutine get_data
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine get_num_nodes_and_elements(self, num_nodes, num_tris, num_quads)
+
+  class(fv3jedi_geom),  intent(in)  :: self
+  integer, intent(out) :: num_nodes
+  integer, intent(out) :: num_tris
+  integer, intent(out) :: num_quads
+
+  if (self%ntiles == 6) then
+    call get_num_nodes_and_elements_global(self, num_nodes, num_tris, num_quads)
+  else if (self%ntiles == 1) then
+    call get_num_nodes_and_elements_regional(self, num_nodes, num_tris, num_quads)
+  else
+    call mpp_error(FATAL, "get_num_nodes_and_elements: ntiles != 1 or 6")
+  end if
+
+end subroutine get_num_nodes_and_elements
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine get_num_nodes_and_elements_global(self, num_nodes, num_tris, num_quads)
+
+  class(fv3jedi_geom),  intent(in)  :: self
+  integer, intent(out) :: num_nodes
+  integer, intent(out) :: num_tris
+  integer, intent(out) :: num_quads
+
+  integer :: nx, ny
+  logical :: lower_left_corner, upper_left_corner, lower_right_corner
+
+  ! extra +1 from adding the ghost nodes on the lower side of each dimension
+  nx = self%iec - self%isc + 2
+  ny = self%jec - self%jsc + 2
+
+  ! default case
+  num_nodes = nx * ny
+  num_tris = 0
+  num_quads = (nx - 1) * (ny - 1)
+
+  lower_left_corner = (self%isc == 1 .and. self%jsc == 1)
+  upper_left_corner = (self%isc == 1 .and. self%jec == self%npy-1)
+  lower_right_corner = (self%iec == self%npx-1 .and. self%jsc == 1)
+
+  ! if at lower-left corner of any tile, then lower-left quad is a tri
+  if (lower_left_corner) then
+    num_nodes = num_nodes - 1
+    num_tris = num_tris + 1
+    num_quads = num_quads - 1
+  end if
+
+  ! if at upper-left corner of tile #3, then add extra tri in upper-left corner
+  if (upper_left_corner .and. self%ntile == 3) then
+    num_nodes = num_nodes + 1
+    num_tris = num_tris + 1
+  end if
+
+  ! if at lower-right corner of tile #6, then add extra tri in lower-right corner
+  if (lower_right_corner .and. self%ntile == 6) then
+    num_nodes = num_nodes + 1
+    num_tris = num_tris + 1
+  end if
+
+end subroutine get_num_nodes_and_elements_global
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine get_num_nodes_and_elements_regional(self, num_nodes, num_tris, num_quads)
+
+  class(fv3jedi_geom),  intent(in)  :: self
+  integer, intent(out) :: num_nodes
+  integer, intent(out) :: num_tris
+  integer, intent(out) :: num_quads
+
+  integer :: nx, ny
+  logical :: right_bdry, upper_bdry
+
+  ! extra +1 from adding the ghost nodes on the lower side of each dimension
+  nx = self%iec - self%isc + 2
+  ny = self%jec - self%jsc + 2
+
+  right_bdry = (self%iec == self%npx-1)
+  upper_bdry = (self%jec == self%npy-1)
+
+  ! if at upper or right edges, need to adjust the nx,ny for a differently-sized rectangle
+  if (right_bdry) then
+    nx = nx + 1
+  end if
+  if (upper_bdry) then
+    ny = ny + 1
+  end if
+
+  num_nodes = nx * ny
+  num_tris = 0
+  num_quads = (nx - 1) * (ny - 1)
+
+end subroutine get_num_nodes_and_elements_regional
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine get_coords_and_connectivities(self, &
+    num_nodes, num_tri_boundary_nodes, num_quad_boundary_nodes, &
+    lons, lats, ghosts, global_indices, remote_indices, partition, &
+    raw_tri_boundary_nodes, raw_quad_boundary_nodes)
+
+  class(fv3jedi_geom),  intent(in)  :: self
+  integer, intent(in) :: num_nodes
+  integer, intent(in) :: num_tri_boundary_nodes
+  integer, intent(in) :: num_quad_boundary_nodes
+  real(kind_real), intent(out) :: lons(num_nodes)
+  real(kind_real), intent(out) :: lats(num_nodes)
+  integer, intent(out) :: ghosts(num_nodes)
+  integer, intent(out) :: global_indices(num_nodes)
+  integer, intent(out) :: remote_indices(num_nodes)
+  integer, intent(out) :: partition(num_nodes)
+  integer, intent(out) :: raw_tri_boundary_nodes(num_tri_boundary_nodes)
+  integer, intent(out) :: raw_quad_boundary_nodes(num_quad_boundary_nodes)
+
+  if (self%ntiles == 6) then
+    call get_coords_and_connectivities_global(self, &
+        num_nodes, num_tri_boundary_nodes, num_quad_boundary_nodes, &
+        lons, lats, ghosts, global_indices, remote_indices, partition, &
+        raw_tri_boundary_nodes, raw_quad_boundary_nodes)
+  else if (self%ntiles == 1) then
+    call get_coords_and_connectivities_regional(self, &
+        num_nodes, num_tri_boundary_nodes, num_quad_boundary_nodes, &
+        lons, lats, ghosts, global_indices, remote_indices, partition, &
+        raw_tri_boundary_nodes, raw_quad_boundary_nodes)
+  else
+    call mpp_error(FATAL, "get_coords_and_connectivities: ntiles != 1 or 6")
+  end if
+
+end subroutine get_coords_and_connectivities
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine get_coords_and_connectivities_global(self, &
+    num_nodes, num_tri_boundary_nodes, num_quad_boundary_nodes, &
+    lons, lats, ghosts, global_indices, remote_indices, partition, &
+    raw_tri_boundary_nodes, raw_quad_boundary_nodes)
+
+  use mpp_domains_mod, only: mpp_update_domains
+
+  class(fv3jedi_geom),  intent(in)  :: self
+  integer, intent(in) :: num_nodes
+  integer, intent(in) :: num_tri_boundary_nodes
+  integer, intent(in) :: num_quad_boundary_nodes
+  real(kind_real), intent(out) :: lons(num_nodes)
+  real(kind_real), intent(out) :: lats(num_nodes)
+  integer, intent(out) :: ghosts(num_nodes)
+  integer, intent(out) :: global_indices(num_nodes)
+  integer, intent(out) :: remote_indices(num_nodes)
+  integer, intent(out) :: partition(num_nodes)
+  integer, intent(out) :: raw_tri_boundary_nodes(num_tri_boundary_nodes)
+  integer, intent(out) :: raw_quad_boundary_nodes(num_quad_boundary_nodes)
+
+  integer :: i, j, node_counter, tri_counter, quad_counter
+  logical :: lower_left_corner, upper_left_corner, lower_right_corner
+
+  integer :: loc_ghost(self%isd:self%ied, self%jsd:self%jed)
+  integer :: loc_global_index(self%isd:self%ied, self%jsd:self%jed)
+  integer :: loc_remote_index(self%isd:self%ied, self%jsd:self%jed)
+  integer :: loc_partition(self%isd:self%ied, self%jsd:self%jed)
+
+  lower_left_corner = (self%isc == 1 .and. self%jsc == 1)
+  upper_left_corner = (self%isc == 1 .and. self%jec == self%npy-1)
+  lower_right_corner = (self%iec == self%npx-1 .and. self%jsc == 1)
+
+  ! local 2d array for ghost, no need to exchange
+  loc_ghost = 1
+  loc_ghost(self%isc:self%iec, self%jsc:self%jec) = 0
+
+  ! local 2d arrays for global_index, remote_index, and partition for exchanging across tasks
+  loc_global_index = -1
+  loc_global_index(self%isc:self%iec, self%jsc:self%jec) = (self%npx-1) * (self%npy-1) * (self%ntile-1)
+  do j = self%jsc, self%jec
+    do i = self%isc, self%iec
+      ! 1-based index for global index
+      loc_global_index(i,j) = loc_global_index(i,j) + (j - 1) * (self%npx-1) + i
+    end do
+  end do
+  call mpp_update_domains(loc_global_index, self%domain)
+
+  loc_remote_index = -1
+  do j = self%jsc, self%jec
+    do i = self%isc, self%iec
+      ! 1-based index
+      loc_remote_index(i,j) = (j - self%jsc) * (self%iec - self%isc + 1) + (i - self%isc) + 1
+    end do
+  end do
+  call mpp_update_domains(loc_remote_index, self%domain)
+
+  loc_partition = -1
+  loc_partition(self%isc:self%iec, self%jsc:self%jec) = self%f_comm%rank()
+  call mpp_update_domains(loc_partition, self%domain)
+
+  call self%fv3_nodes_to_atlas_nodes(self%grid_lon, lons)
+  call self%fv3_nodes_to_atlas_nodes(self%grid_lat, lats)
+  call self%fv3_nodes_to_atlas_nodes(loc_ghost, ghosts)
+  call self%fv3_nodes_to_atlas_nodes(loc_global_index, global_indices)
+  call self%fv3_nodes_to_atlas_nodes(loc_remote_index, remote_indices)
+  call self%fv3_nodes_to_atlas_nodes(loc_partition, partition)
+
+  lons = constant('rad2deg') * lons
+  lats = constant('rad2deg') * lats
+
+  tri_counter = 1
+  quad_counter = 1
+  do j = self%jsc-1, self%jec
+    do i = self%isc-1, self%iec
+
+      ! if at lower-left corner of any tile, then lower-left quad is a tri => skip a point
+      if (lower_left_corner .and. (j == self%jsc-1) .and. (i == self%isc-1)) then
+        raw_tri_boundary_nodes(tri_counter)   = loc_global_index(i+1, j)
+        raw_tri_boundary_nodes(tri_counter+1) = loc_global_index(i+1, j+1)
+        raw_tri_boundary_nodes(tri_counter+2) = loc_global_index(i, j+1)
+        tri_counter = tri_counter + 3
+        cycle
+      end if
+
+      if ((j /= self%jec) .and. (i /= self%iec)) then
+        raw_quad_boundary_nodes(quad_counter)   = loc_global_index(i, j)
+        raw_quad_boundary_nodes(quad_counter+1) = loc_global_index(i+1, j)
+        raw_quad_boundary_nodes(quad_counter+2) = loc_global_index(i+1, j+1)
+        raw_quad_boundary_nodes(quad_counter+3) = loc_global_index(i, j+1)
+        quad_counter = quad_counter + 4
+      end if
+    end do
+  end do
+
+  ! at upper-left corner of tile #3, then add extra tri => add extra point
+  if (upper_left_corner .and. (self%ntile == 3)) then
+    raw_tri_boundary_nodes(tri_counter)   = loc_global_index(self%isc-1, self%jec)
+    raw_tri_boundary_nodes(tri_counter+1) = loc_global_index(self%isc, self%jec)
+    raw_tri_boundary_nodes(tri_counter+2) = loc_global_index(self%isc, self%jec+1)
+    tri_counter = tri_counter + 3
+  end if
+
+  ! if at lower-right corner of tile #6, then add extra tri => add extra point
+  if (lower_right_corner .and. (self%ntile == 6)) then
+    raw_tri_boundary_nodes(tri_counter)   = loc_global_index(self%iec, self%jsc-1)
+    raw_tri_boundary_nodes(tri_counter+1) = loc_global_index(self%iec+1, self%jsc)
+    raw_tri_boundary_nodes(tri_counter+2) = loc_global_index(self%iec, self%jsc)
+    tri_counter = tri_counter + 3
+  end if
+
+  ! sanity checks: tri_counter-1 == num_tri_boundary_nodes
+  if (tri_counter-1 /= num_tri_boundary_nodes) then
+    call abor1_ftn('fv3jedi_geom_mod: inconsistent tri counter when getting connectivities')
+  end if
+  ! quad_counter-1 == num_quad_boundary_nodes
+  if (quad_counter-1 /= num_quad_boundary_nodes) then
+    call abor1_ftn('fv3jedi_geom_mod: inconsistent quad counter when getting connectivities')
+  end if
+
+end subroutine get_coords_and_connectivities_global
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine get_coords_and_connectivities_regional(self, &
+    num_nodes, num_tri_boundary_nodes, num_quad_boundary_nodes, &
+    lons, lats, ghosts, global_indices, remote_indices, partition, &
+    raw_tri_boundary_nodes, raw_quad_boundary_nodes)
+
+  use mpp_domains_mod, only: mpp_update_domains
+
+  class(fv3jedi_geom),  intent(in)  :: self
+  integer, intent(in) :: num_nodes
+  integer, intent(in) :: num_tri_boundary_nodes
+  integer, intent(in) :: num_quad_boundary_nodes
+  real(kind_real), intent(out) :: lons(num_nodes)
+  real(kind_real), intent(out) :: lats(num_nodes)
+  integer, intent(out) :: ghosts(num_nodes)
+  integer, intent(out) :: global_indices(num_nodes)
+  integer, intent(out) :: remote_indices(num_nodes)
+  integer, intent(out) :: partition(num_nodes)
+  integer, intent(out) :: raw_tri_boundary_nodes(num_tri_boundary_nodes)
+  integer, intent(out) :: raw_quad_boundary_nodes(num_quad_boundary_nodes)
+
+  integer :: i, j, node_counter, quad_counter
+  integer :: imax, jmax
+  integer :: counter_local_idx
+  logical :: left_bdry, right_bdry, lower_bdry, upper_bdry
+
+  logical :: loc_bc(self%isd:self%ied, self%jsd:self%jed)
+  integer :: loc_ghost(self%isd:self%ied, self%jsd:self%jed)
+  integer :: loc_global_index(self%isd:self%ied, self%jsd:self%jed)
+  integer :: loc_remote_index(self%isd:self%ied, self%jsd:self%jed)
+  integer :: exchange_remote_index(self%isd:self%ied, self%jsd:self%jed)
+  integer :: loc_partition(self%isd:self%ied, self%jsd:self%jed)
+
+  left_bdry = (self%isc == 1)
+  right_bdry = (self%iec == self%npx-1)
+  lower_bdry = (self%jsc == 1)
+  upper_bdry = (self%jec == self%npy-1)
+
+  imax = self%iec
+  if (right_bdry) then
+    imax = imax + 1
+  end if
+
+  jmax = self%jec
+  if (upper_bdry) then
+    jmax = jmax + 1
+  end if
+
+  ! identify which points in first halo layer are this tasks's BC points
+  loc_bc = .false.
+  if (left_bdry) loc_bc(self%isc-1, self%jsc:self%jec) = .true.
+  if (right_bdry) loc_bc(self%iec+1, self%jsc:self%jec) = .true.
+  if (lower_bdry) loc_bc(self%isc:self%iec, self%jsc-1) = .true.
+  if (upper_bdry) loc_bc(self%isc:self%iec, self%jec+1) = .true.
+  if (left_bdry .and. lower_bdry) loc_bc(self%isc-1, self%jsc-1) = .true.
+  if (left_bdry .and. upper_bdry) loc_bc(self%isc-1, self%jec+1) = .true.
+  if (right_bdry .and. lower_bdry) loc_bc(self%iec+1, self%jsc-1) = .true.
+  if (right_bdry .and. upper_bdry) loc_bc(self%iec+1, self%jec+1) = .true.
+
+  ! local 2d array for ghost, no need to exchange
+  loc_ghost = 1
+  loc_ghost(self%isc:self%iec, self%jsc:self%jec) = 0
+  where (loc_bc) loc_ghost = 0
+
+  ! local 2d arrays for global_index, remote_index, and partition for exchanging across tasks
+
+  ! global_index runs over the entire regional "compute" domain +/- 1 point
+  loc_global_index = -1
+  do j = self%jsc-1, self%jec+1
+    do i = self%isc-1, self%iec+1
+      ! 1-based index
+      loc_global_index(i,j) = j * (self%npx + 1) + i + 1
+    end do
+  end do
+
+  loc_remote_index = -1
+  do j = self%jsc, self%jec
+    do i = self%isc, self%iec
+      ! 1-based index
+      loc_remote_index(i,j) = (j - self%jsc) * (self%iec - self%isc + 1) + (i - self%isc) + 1
+    end do
+  end do
+  counter_local_idx = maxval(loc_remote_index)
+  ! use exchange to fill halo points with neighboring task's index
+  call mpp_update_domains(loc_remote_index, self%domain)
+  ! for halo points that are actually a BC, generate new local indices
+  do j = self%jsc-1, self%jec+1
+    do i = self%isc-1, self%iec+1
+      if (loc_bc(i, j)) then
+        counter_local_idx = counter_local_idx + 1
+        loc_remote_index(i,j) = counter_local_idx
+      end if
+    end do
+  end do
+
+  loc_partition = -1
+  loc_partition(self%isc:self%iec, self%jsc:self%jec) = self%f_comm%rank()
+  call mpp_update_domains(loc_partition, self%domain)
+  where (loc_bc) loc_partition = self%f_comm%rank()
+
+  ! special case handling of halo points within the BC region:
+  !
+  ! to allow JEDI's generic code (using atlas) to perform halo exchanges within the BC region, we
+  ! need to pass connectivity information (atlas's partition number and index of each point)
+  ! between adjacent processors on the boundary. this is slightly tedious to do, because fv3's own
+  ! halo-exchanges do NOT pass around BC information.
+  !
+  ! our strategy is take the indices that were generated to fill loc_remote_index, copy them into
+  ! the *owned* portion of a dummy array, then use fv3's halo exchanges to send them to neighboring
+  ! MPI tasks. this adds an extra MPI communication, but avoids the need to implement complicated
+  ! logic to recreated the neighboring task's locally-generated indices into its BC regions.
+  !
+  ! in this illustration,
+  !
+  ! boundary condition        bc0   bc1   bc2   bc3 | bc4   bc5   bc6   bc7
+  !                                                 |
+  ! upper boundary of domain  ----------------------+----------------------
+  !                                                 |
+  ! interior points           x0    x1    x2    x3  | y0    y1    y2    y3
+  !                                 task 0          |       task 1
+  !
+  ! task 0 needs to fill the halo location `bc4` adjacent to its BC location `bc3`. the partition
+  ! number is easily obtained by reading the partition of points `y0`, as these must match.
+  ! however, the index of `bc4` on task 1 is hard to recompute on task 0, so we follow these steps,
+  ! - task 1 copies the generated index of `bc4` into the `y0` slot of a dummy array
+  ! - use fv3's halo exchange to send this index into the halo region on task 0
+  ! - task 0 reads `bc4`'s local index (from task 1) in the `y0` slot of the dummy array
+  exchange_remote_index = -1
+  if (left_bdry) then
+    if (.not.upper_bdry) then
+      ! fill upper-left OWNED point with generated index of corresponding BC point
+      exchange_remote_index(self%isc, self%jec) = loc_remote_index(self%isc-1, self%jec)
+    end if
+    if (.not.lower_bdry) then
+      exchange_remote_index(self%isc, self%jsc) = loc_remote_index(self%isc-1, self%jsc)
+    end if
+  end if
+  if (right_bdry) then
+    if (.not.upper_bdry) then
+      exchange_remote_index(self%iec, self%jec) = loc_remote_index(self%iec+1, self%jec)
+    end if
+    if (.not.lower_bdry) then
+      exchange_remote_index(self%iec, self%jsc) = loc_remote_index(self%iec+1, self%jsc)
+    end if
+  end if
+  if (lower_bdry) then
+    if (.not.left_bdry) then
+      exchange_remote_index(self%isc, self%jsc) = loc_remote_index(self%isc, self%jsc-1)
+    end if
+    if (.not.right_bdry) then
+      exchange_remote_index(self%iec, self%jsc) = loc_remote_index(self%iec, self%jsc-1)
+    end if
+  end if
+  if (upper_bdry) then
+    if (.not.left_bdry) then
+      exchange_remote_index(self%isc, self%jec) = loc_remote_index(self%isc, self%jec+1)
+    end if
+    if (.not.right_bdry) then
+      exchange_remote_index(self%iec, self%jec) = loc_remote_index(self%iec, self%jec+1)
+    end if
+  end if
+  ! halo-exchange the dummy array
+  call mpp_update_domains(exchange_remote_index, self%domain)
+  if (left_bdry) then
+    if (.not.upper_bdry) then
+      ! fill upper-left BC from neighbor's lower-right OWNED point, using the index already in halo
+      loc_remote_index(self%isc-1, self%jec+1) = exchange_remote_index(self%isc, self%jec+1)
+      loc_partition(self%isc-1, self%jec+1) = loc_partition(self%isc, self%jec+1)
+    end if
+    if (.not.lower_bdry) then
+      loc_remote_index(self%isc-1, self%jsc-1) = exchange_remote_index(self%isc, self%jsc-1)
+      loc_partition(self%isc-1, self%jsc-1) = loc_partition(self%isc, self%jsc-1)
+    end if
+  end if
+  if (right_bdry) then
+    if (.not.upper_bdry) then
+      loc_remote_index(self%iec+1, self%jec+1) = exchange_remote_index(self%iec, self%jec+1)
+      loc_partition(self%iec+1, self%jec+1) = loc_partition(self%iec, self%jec+1)
+    end if
+    if (.not.lower_bdry) then
+      loc_remote_index(self%iec+1, self%jsc-1) = exchange_remote_index(self%iec, self%jsc-1)
+      loc_partition(self%iec+1, self%jsc-1) = loc_partition(self%iec, self%jsc-1)
+    end if
+  end if
+  if (lower_bdry) then
+    if (.not.left_bdry) then
+      loc_remote_index(self%isc-1, self%jsc-1) = exchange_remote_index(self%isc-1, self%jsc)
+      loc_partition(self%isc-1, self%jsc-1) = loc_partition(self%isc-1, self%jsc)
+    end if
+    if (.not.right_bdry) then
+      loc_remote_index(self%iec+1, self%jsc-1) = exchange_remote_index(self%iec+1, self%jsc)
+      loc_partition(self%iec+1, self%jsc-1) = loc_partition(self%iec+1, self%jsc)
+    end if
+  end if
+  if (upper_bdry) then
+    if (.not.left_bdry) then
+      loc_remote_index(self%isc-1, self%jec+1) = exchange_remote_index(self%isc-1, self%jec)
+      loc_partition(self%isc-1, self%jec+1) = loc_partition(self%isc-1, self%jec)
+    end if
+    if (.not.right_bdry) then
+      loc_remote_index(self%iec+1, self%jec+1) = exchange_remote_index(self%iec+1, self%jec)
+      loc_partition(self%iec+1, self%jec+1) = loc_partition(self%iec+1, self%jec)
+    end if
+  end if
+
+  call self%fv3_nodes_to_atlas_nodes(self%grid_lon, lons)
+  call self%fv3_nodes_to_atlas_nodes(self%grid_lat, lats)
+  call self%fv3_nodes_to_atlas_nodes(loc_ghost, ghosts)
+  call self%fv3_nodes_to_atlas_nodes(loc_global_index, global_indices)
+  call self%fv3_nodes_to_atlas_nodes(loc_remote_index, remote_indices)
+  call self%fv3_nodes_to_atlas_nodes(loc_partition, partition)
+
+  lons = constant('rad2deg') * lons
+  lats = constant('rad2deg') * lats
+
+  quad_counter = 1
+  do j = self%jsc-1, jmax
+    do i = self%isc-1, imax
+      if ((j /= jmax) .and. (i /= imax)) then
+        raw_quad_boundary_nodes(quad_counter)   = loc_global_index(i, j)
+        raw_quad_boundary_nodes(quad_counter+1) = loc_global_index(i+1, j)
+        raw_quad_boundary_nodes(quad_counter+2) = loc_global_index(i+1, j+1)
+        raw_quad_boundary_nodes(quad_counter+3) = loc_global_index(i, j+1)
+        quad_counter = quad_counter + 4
+      end if
+    end do
+  end do
+
+  ! quad_counter-1 == num_quad_boundary_nodes
+  if (quad_counter-1 /= num_quad_boundary_nodes) then
+    call abor1_ftn('fv3jedi_geom_mod: inconsistent quad counter when getting connectivities')
+  end if
+
+  ! Avoid compilation warning
+  raw_tri_boundary_nodes = 0
+
+end subroutine get_coords_and_connectivities_regional
+
+! --------------------------------------------------------------------------------------------------
+
+subroutine fv3_nodes_to_atlas_nodes_r(self, fv3_data, atlas_data)
+
+  class(fv3jedi_geom), intent(in) :: self
+  real(kind_real), intent(in) :: fv3_data(self%isd:self%ied, self%jsd:self%jed)
+  real(kind_real), intent(inout) :: atlas_data(:)
+
+  integer :: a, b, ncopy
+  logical :: at_lower_left_corner, at_upper_left_corner, at_lower_right_corner
+  logical :: at_right_edge, at_upper_edge
+  logical :: halo_w, halo_e, halo_s, halo_n, halo_sw, halo_nw, halo_ne, halo_se, halo_nw3, halo_se6
+
+  ! Identify which halos need including
+  ! Default case for PEs interior to a tile
+  halo_w = .true.
+  halo_s = .true.
+  halo_sw = .true.
+  halo_e = .false.
+  halo_n = .false.
+  halo_nw = .false.
+  halo_ne = .false.
+  halo_se = .false.
+  halo_nw3 = .false.
+  halo_se6 = .false.
+
+  ! Edges and corners depend on specifics...
+  if (self%ntiles == 6) then
+    ! Global grid -- handle corners between cubed-sphere tiles
+    at_lower_left_corner = (self%isc == 1 .and. self%jsc == 1)
+    at_upper_left_corner = (self%isc == 1 .and. self%jec == self%npy-1)
+    at_lower_right_corner = (self%iec == self%npx-1 .and. self%jsc == 1)
+
+    ! at lower-left corner of any tile, use a triangle => no diagonal point
+    if (at_lower_left_corner) then
+      halo_sw = .false.
+    end if
+    ! at upper-left corner of tile #3, place extra tri => add extra point
+    if (at_upper_left_corner .and. (self%ntile == 3)) then
+      halo_nw3 = .true.
+    end if
+    ! at lower-right corner of tile #6, place extra tri => add extra point
+    if (at_lower_right_corner .and. (self%ntile == 6)) then
+      halo_se6 = .true.
+    end if
+
+  else if (self%ntiles == 1) then
+    ! Regional grid -- handle "boundary condition" points around patch
+    at_right_edge = (self%iec == self%npx-1)
+    at_upper_edge = (self%jec == self%npy-1)
+
+    if (at_upper_edge) then
+      halo_n = .true.
+      halo_nw = .true.
+    end if
+    if (at_right_edge) then
+      halo_e = .true.
+      halo_se = .true.
+      if (at_upper_edge) then
+        halo_ne = .true.
+      end if
+    end if
+
+  else
+    call mpp_error(FATAL, "fv3_nodes_to_atlas_nodes: ntiles != 1 or 6")
+  end if
+
+  ! First, copy owned points
+  ncopy = self%ngrid
+  a = 1
+  b = ncopy
+  atlas_data(a:b) = reshape(fv3_data(self%isc:self%iec, self%jsc:self%jec), (/ncopy/))
+
+  ! Copy west + east edge halos
+  ncopy = (self%jec - self%jsc + 1)
+  if (halo_w) then
+    a = b + 1
+    b = b + ncopy
+    atlas_data(a:b) = reshape(fv3_data(self%isc-1, self%jsc:self%jec), (/ncopy/))
+  end if
+  if (halo_e) then
+    a = b + 1
+    b = b + ncopy
+    atlas_data(a:b) = reshape(fv3_data(self%iec+1, self%jsc:self%jec), (/ncopy/))
+  end if
+
+  ! Copy south + north edge halos
+  ncopy = (self%iec - self%isc + 1)
+  if (halo_s) then
+    a = b + 1
+    b = b + ncopy
+    atlas_data(a:b) = reshape(fv3_data(self%isc:self%iec, self%jsc-1), (/ncopy/))
+  end if
+  if (halo_n) then
+    a = b + 1
+    b = b + ncopy
+    atlas_data(a:b) = reshape(fv3_data(self%isc:self%iec, self%jec+1), (/ncopy/))
+  end if
+
+  ! Copy corners
+  if (halo_sw) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%isc-1, self%jsc-1)
+  end if
+  if (halo_nw) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%isc-1, self%jec+1)
+  end if
+  if (halo_ne) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%iec+1, self%jec+1)
+  end if
+  if (halo_se) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%iec+1, self%jsc-1)
+  end if
+
+  if (halo_nw3) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%isc, self%jec+1)
+  end if
+  if (halo_se6) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%iec+1, self%jsc)
+  end if
+
+  ! sanity check on size: b = size(atlas_data)
+  if (b /= size(atlas_data)) then
+    call abor1_ftn('fv3jedi_geom_mod%fv3_nodes_to_atlas_nodes: inconsistent atlas_data size')
+  end if
+
+end subroutine fv3_nodes_to_atlas_nodes_r
+
+! --------------------------------------------------------------------------------------------------
+
+! displeasing!
+! this is a copy of the real interface above with just one replacement real -> integer
+subroutine fv3_nodes_to_atlas_nodes_i(self, fv3_data, atlas_data)
+
+  class(fv3jedi_geom), intent(in) :: self
+  integer, intent(in) :: fv3_data(self%isd:self%ied, self%jsd:self%jed)
+  integer, intent(inout) :: atlas_data(:)
+
+  integer :: a, b, ncopy
+  logical :: at_lower_left_corner, at_upper_left_corner, at_lower_right_corner
+  logical :: at_right_edge, at_upper_edge
+  logical :: halo_w, halo_e, halo_s, halo_n, halo_sw, halo_nw, halo_ne, halo_se, halo_nw3, halo_se6
+
+  ! Identify which halos need including
+  ! Default case for PEs interior to a tile
+  halo_w = .true.
+  halo_s = .true.
+  halo_sw = .true.
+  halo_e = .false.
+  halo_n = .false.
+  halo_nw = .false.
+  halo_ne = .false.
+  halo_se = .false.
+  halo_nw3 = .false.
+  halo_se6 = .false.
+
+  ! Edges and corners depend on specifics...
+  if (self%ntiles == 6) then
+    ! Global grid -- handle corners between cubed-sphere tiles
+    at_lower_left_corner = (self%isc == 1 .and. self%jsc == 1)
+    at_upper_left_corner = (self%isc == 1 .and. self%jec == self%npy-1)
+    at_lower_right_corner = (self%iec == self%npx-1 .and. self%jsc == 1)
+
+    ! at lower-left corner of any tile, use a triangle => no diagonal point
+    if (at_lower_left_corner) then
+      halo_sw = .false.
+    end if
+    ! at upper-left corner of tile #3, place extra tri => add extra point
+    if (at_upper_left_corner .and. (self%ntile == 3)) then
+      halo_nw3 = .true.
+    end if
+    ! at lower-right corner of tile #6, place extra tri => add extra point
+    if (at_lower_right_corner .and. (self%ntile == 6)) then
+      halo_se6 = .true.
+    end if
+
+  else if (self%ntiles == 1) then
+    ! Regional grid -- handle "boundary condition" points around patch
+    at_right_edge = (self%iec == self%npx-1)
+    at_upper_edge = (self%jec == self%npy-1)
+
+    if (at_upper_edge) then
+      halo_n = .true.
+      halo_nw = .true.
+    end if
+    if (at_right_edge) then
+      halo_e = .true.
+      halo_se = .true.
+      if (at_upper_edge) then
+        halo_ne = .true.
+      end if
+    end if
+
+  else
+    call mpp_error(FATAL, "fv3_nodes_to_atlas_nodes: ntiles != 1 or 6")
+  end if
+
+  ! First, copy owned points
+  ncopy = self%ngrid
+  a = 1
+  b = ncopy
+  atlas_data(a:b) = reshape(fv3_data(self%isc:self%iec, self%jsc:self%jec), (/ncopy/))
+
+  ! Copy west + east edge halos
+  ncopy = (self%jec - self%jsc + 1)
+  if (halo_w) then
+    a = b + 1
+    b = b + ncopy
+    atlas_data(a:b) = reshape(fv3_data(self%isc-1, self%jsc:self%jec), (/ncopy/))
+  end if
+  if (halo_e) then
+    a = b + 1
+    b = b + ncopy
+    atlas_data(a:b) = reshape(fv3_data(self%iec+1, self%jsc:self%jec), (/ncopy/))
+  end if
+
+  ! Copy south + north edge halos
+  ncopy = (self%iec - self%isc + 1)
+  if (halo_s) then
+    a = b + 1
+    b = b + ncopy
+    atlas_data(a:b) = reshape(fv3_data(self%isc:self%iec, self%jsc-1), (/ncopy/))
+  end if
+  if (halo_n) then
+    a = b + 1
+    b = b + ncopy
+    atlas_data(a:b) = reshape(fv3_data(self%isc:self%iec, self%jec+1), (/ncopy/))
+  end if
+
+  ! Copy corners
+  if (halo_sw) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%isc-1, self%jsc-1)
+  end if
+  if (halo_nw) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%isc-1, self%jec+1)
+  end if
+  if (halo_ne) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%iec+1, self%jec+1)
+  end if
+  if (halo_se) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%iec+1, self%jsc-1)
+  end if
+
+  if (halo_nw3) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%isc, self%jec+1)
+  end if
+  if (halo_se6) then
+    a = b + 1
+    b = b + 1
+    atlas_data(a) = fv3_data(self%iec+1, self%jsc)
+  end if
+
+  ! sanity check on size: b = size(atlas_data)
+  if (b /= size(atlas_data)) then
+    call abor1_ftn('fv3jedi_geom_mod%fv3_nodes_to_atlas_nodes: inconsistent atlas_data size')
+  end if
+
+end subroutine fv3_nodes_to_atlas_nodes_i
+
 ! --------------------------------------------------------------------------------------------------
 
 end module fv3jedi_geom_mod

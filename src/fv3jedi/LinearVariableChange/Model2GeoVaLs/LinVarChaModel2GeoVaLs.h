@@ -15,7 +15,6 @@
 
 #include "fv3jedi/LinearVariableChange/Base/LinearVariableChangeBase.h"
 #include "fv3jedi/LinearVariableChange/Model2GeoVaLs/LinVarChaModel2GeoVaLs.interface.h"
-#include "fv3jedi/Utilities/Traits.h"
 
 namespace fv3jedi {
   class Geometry;
