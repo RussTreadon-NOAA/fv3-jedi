@@ -35,7 +35,8 @@ static IOMaker<IOStructuredGrid> makerIOStructuredGrid_("structured grid");
 static IOMaker<IOStructuredGrid> makerIOAuxGrid_("auxgrid");
 // -------------------------------------------------------------------------------------------------
 IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & params)
-  : IOBase(geom, params.toConfiguration()), interpolator_(), params_(params), gridStr_(""),
+  : IOBase(geom, params.toConfiguration()), interpolator_(), readInterpolator_(),
+    params_(params), gridStr_(""),
     geom_(geom), writeFunctionSpace_(), readFunctionSpace_() {
   util::Timer timer(classname(), "IOStructuredGrid");
   oops::Log::trace() << classname() << " constructor starting" << std::endl;
@@ -83,23 +84,39 @@ IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & pa
   writeFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, dist, atlas_conf));
 
   // Structured grid function space (read)
-  // The read function space uses the same serial distribution (all grid points on rank 0),
-  // mirroring the write function space. It is built once here and cached for all reads.
-  // It is kept as a separate member from writeFunctionSpace_ so that future steps can give it
-  // a different distribution (e.g. equal_regions for parallel reads) without affecting writes.
+  // Uses an equal_regions distribution so that all MPI ranks participate in reading and the
+  // subsequent structured→cubed-sphere interpolation.  Each rank is assigned a contiguous band
+  // of latitude rows by the equal_regions partitioner, which balances the read workload and
+  // ensures that j_begin()/j_end() are set correctly on every rank.
   // --------------------------------------------------------------------------------------
-  readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, dist, atlas_conf));
+  const atlas::grid::Distribution readDist(grid, atlas::grid::Partitioner("equal_regions"));
+  readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, readDist, atlas_conf));
 
-  // Create a GeometryData object
-  // ----------------------------
+  // Create a GeometryData object for the write (cube-sphere → structured) interpolator
+  // ------------------------------------------------------------------------------------
   oops::GeometryData geomData(geom.functionSpace(), geom.fields(), geom.levelsAreTopDown(),
                               geom.getComm());
 
-  // Create a generic interpolator for converting to the structured grid
+  // Create a generic interpolator for converting to the structured grid (write path)
   // -------------------------------------------------------------------
   interpolator_.reset(new oops::GlobalInterpolator(params.toConfiguration(), geomData,
                                                    *writeFunctionSpace_,
                                                    geom.getComm()));
+
+  // Create a GeometryData for the read (structured → cube-sphere) interpolator.
+  // The source is the equal_regions readFunctionSpace_; an empty field set is sufficient
+  // because the StructuredColumns function space provides its own coordinate information.
+  // ------------------------------------------------------------------------------------
+  atlas::FieldSet readGeomFields;
+  oops::GeometryData readGeomData(*readFunctionSpace_, readGeomFields, geom.levelsAreTopDown(),
+                                  geom.getComm());
+
+  // Create an interpolator for converting from the structured grid to the cube-sphere
+  // (read path: structured → cubed-sphere)
+  // -------------------------------------------------------------------
+  readInterpolator_.reset(new oops::GlobalInterpolator(params.toConfiguration(), readGeomData,
+                                                       geom.functionSpace(),
+                                                       geom.getComm()));
   oops::Log::trace() << classname() << " constructor done" << std::endl;
 }
 // -------------------------------------------------------------------------------------------------
@@ -120,17 +137,21 @@ void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileion
   const oops::Variables & vars = x.variables();
   const std::vector<std::string> fieldNames(vars.variables().begin(), vars.variables().end());
 
-  // Read fields from file(s) into the geographic (readFunctionSpace_) Atlas FieldSet on rank 0.
-  // The readFunctionSpace_ has a serial distribution (all points on rank 0), so reading is
-  // done on rank 0 only.
-  atlas::FieldSet fieldsGeographic;
-  if (geom_.getComm().rank() == 0) {
-    this->readStructuredFields(fieldsGeographic, fieldNames, x.validTime(), fileionames);
-  }
+  // Read fields from file(s) into the structured (readFunctionSpace_) Atlas FieldSet.
+  // readFunctionSpace_ uses an equal_regions distribution so every MPI rank reads its own
+  // slice of latitude rows.  All ranks must call readStructuredFields so that each rank's
+  // portion of the structured grid is populated before interpolation.
+  atlas::FieldSet fieldsStructured;
+  this->readStructuredFields(fieldsStructured, fieldNames, x.validTime(), fileionames);
 
-  // Reverse interpolation (geographic → cube sphere) and State::fromFieldSet are not yet
-  // implemented; they will be added in a subsequent step.
-  ABORT("IOStructuredGrid::read(State): reverse interpolation not yet implemented");
+  // Interpolate from the structured grid to the cubed-sphere (all ranks participate).
+  atlas::FieldSet fieldsCubeSphere;
+  readInterpolator_->apply(fieldsStructured, fieldsCubeSphere);
+
+  // Populate the State from the interpolated cubed-sphere FieldSet.
+  x.fromFieldSet(fieldsCubeSphere);
+
+  oops::Log::trace() << classname() << " read state done" << std::endl;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -144,15 +165,19 @@ void IOStructuredGrid::read(Increment & dx, const eckit::LocalConfiguration & fi
   const oops::Variables & vars = dx.variables();
   const std::vector<std::string> fieldNames(vars.variables().begin(), vars.variables().end());
 
-  // Read fields from file(s) into the geographic (readFunctionSpace_) Atlas FieldSet on rank 0.
-  atlas::FieldSet fieldsGeographic;
-  if (geom_.getComm().rank() == 0) {
-    this->readStructuredFields(fieldsGeographic, fieldNames, dx.validTime(), fileionames);
-  }
+  // Read fields from file(s) into the structured (readFunctionSpace_) Atlas FieldSet.
+  // All ranks participate because readFunctionSpace_ uses an equal_regions distribution.
+  atlas::FieldSet fieldsStructured;
+  this->readStructuredFields(fieldsStructured, fieldNames, dx.validTime(), fileionames);
 
-  // Reverse interpolation (geographic → cube sphere) and Increment::fromFieldSet are not yet
-  // implemented; they will be added in a subsequent step.
-  ABORT("IOStructuredGrid::read(Increment): reverse interpolation not yet implemented");
+  // Interpolate from the structured grid to the cubed-sphere (all ranks participate).
+  atlas::FieldSet fieldsCubeSphere;
+  readInterpolator_->apply(fieldsStructured, fieldsCubeSphere);
+
+  // Populate the Increment from the interpolated cubed-sphere FieldSet.
+  dx.fromFieldSet(fieldsCubeSphere);
+
+  oops::Log::trace() << classname() << " read increment done" << std::endl;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -714,51 +739,73 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
       nc_rc(rc, "nc_get_att_float missing_value " + varName);
   }
 
-  // Step 6: Build start/count arrays and read variable data as float
-  // ----------------------------------------------------------------
+  // Step 6: Determine the local j-row range owned by this MPI rank.
+  // readFunctionSpace_ uses an equal_regions distribution, so each rank owns a contiguous
+  // band [j_begin, j_end) of Atlas latitude rows.  Atlas j=0 is the northernmost row.
+  // flipJ mapping:
+  //   flipJ=false → file j = Atlas j  → read file rows [j_begin, j_end)
+  //   flipJ=true  → file j = nLat-1-j_atlas → read file rows [nLat-j_end, nLat-j_begin)
+  // -------------------------------------------------------------------------
+  const int j_begin = static_cast<int>(readFunctionSpace_->j_begin());
+  const int j_end   = static_cast<int>(readFunctionSpace_->j_end());
+  const int n_j_local = j_end - j_begin;
+
+  // Build start/count arrays for reading only the local j-rows from the file.
   std::vector<size_t> start(ndims, 0);
   std::vector<size_t> count(ndims, 1);
   if (iTime >= 0) { start[iTime] = 0; count[iTime] = 1; }
   if (iLev  >= 0) { start[iLev]  = 0; count[iLev]  = static_cast<size_t>(nLevField); }
-  start[iLat] = 0; count[iLat] = static_cast<size_t>(nLat);
   start[iLon] = 0; count[iLon] = static_cast<size_t>(nLon);
 
-  const size_t bufSize = static_cast<size_t>(nLevField) * nLat * nLon;
-  std::vector<float> buf(bufSize);
-  nc_rc(nc_get_vara_float(fileId, varId, start.data(), count.data(), buf.data()),
-        "nc_get_vara_float " + varName);
+  // File j-row range corresponding to this rank's Atlas rows
+  const int j_file_beg = flipJ ? (nLat - j_end) : j_begin;
+  start[iLat] = static_cast<size_t>(j_file_beg);
+  count[iLat] = static_cast<size_t>(n_j_local);
 
-  // Step 7: Create the Atlas field with shape (npts=nLat*nLon, nLevField)
+  const size_t bufSize = static_cast<size_t>(nLevField) * n_j_local * nLon;
+  std::vector<float> buf(bufSize);
+  if (n_j_local > 0) {
+    nc_rc(nc_get_vara_float(fileId, varId, start.data(), count.data(), buf.data()),
+          "nc_get_vara_float " + varName);
+  }
+
+  // Step 7: Create the Atlas field on the local portion of readFunctionSpace_.
+  // The field has shape (local_npts, nLevField) where local_npts = readFunctionSpace_->size().
   // ----------------------------------------------------------------------
   atlas::Field field = readFunctionSpace_->createField<double>(
       atlas::option::name(varName) | atlas::option::levels(nLevField));
   auto fieldView = atlas::array::make_view<double, 2>(field);
 
-  // Step 8: Compute buffer strides (C-order, dimension ordering as in file).
-  // Using strides makes the indexing correct regardless of the dimension
-  // ordering in the file.
-  // ------------------------------------------------------------------------
+  // Step 8: Compute buffer strides (C-order, based on the local count array).
+  // Using strides makes the indexing correct regardless of the dimension ordering in the file.
+  // ----------------------------------------------------------------------------------------
   std::vector<size_t> strides(ndims, 1);
   for (int d = ndims - 2; d >= 0; --d) {
     strides[d] = strides[d + 1] * count[d + 1];
   }
 
   // Step 9: Check missing values, convert float → double, pack into Atlas field view.
-  // Atlas field layout: fieldView(j*nLon + i, k) = value at (lat j, lon i, level k).
-  // When flipJ is true the file stores rows south-to-north but Atlas expects north-to-south
-  // (j=0 = northernmost row), so the file row j_file maps to Atlas row (nLat-1-j_file).
+  // Atlas field layout: fieldView(index(j_atlas, i), k).
+  //   readFunctionSpace_->index(j, i) gives the local flat index for global point (j, i)
+  //   where j must be in [j_begin, j_end) for this rank.
+  //
+  // Buffer row index (buffer_row) within the read buffer for Atlas row j_atlas:
+  //   flipJ=false: buffer_row = j_atlas - j_begin  (buffer rows in increasing Atlas-j order)
+  //   flipJ=true:  buffer_row = j_end - 1 - j_atlas  (buffer rows in decreasing Atlas-j order)
+  //                because file rows [nLat-j_end, nLat-j_begin) correspond to Atlas rows
+  //                [j_begin, j_end) in reversed order.
   // -----------------------------------------------------------------------------------
   double valMin =  std::numeric_limits<double>::max();
   double valMax = -std::numeric_limits<double>::max();
 
   for (int k = 0; k < nLevField; ++k) {
-    for (int j_file = 0; j_file < nLat; ++j_file) {
-      const int j_atlas = flipJ ? (nLat - 1 - j_file) : j_file;
+    for (int j_atlas = j_begin; j_atlas < j_end; ++j_atlas) {
+      const int buffer_row = flipJ ? (j_end - 1 - j_atlas) : (j_atlas - j_begin);
       for (int i = 0; i < nLon; ++i) {
         // Buffer index using precomputed strides; time index is always 0
-        size_t bufIdx = (iLev  >= 0 ? static_cast<size_t>(k) * strides[iLev]  : 0)
-                      + static_cast<size_t>(j_file) * strides[iLat]
-                      + static_cast<size_t>(i) * strides[iLon];
+        const size_t bufIdx = (iLev  >= 0 ? static_cast<size_t>(k) * strides[iLev]  : 0)
+                            + static_cast<size_t>(buffer_row) * strides[iLat]
+                            + static_cast<size_t>(i) * strides[iLon];
         const float val = buf[bufIdx];
         // Check against the threshold AND against the explicit fill/missing values.
         // The threshold test catches the standard GFS/UFS 9.99e20 fill value.
@@ -771,12 +818,12 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
           std::ostringstream oss;
           oss << "IOStructuredGrid::readVarToStructuredAtlasField: missing/fill value "
               << val << " detected in variable '" << varName
-              << "' at (j=" << j_file << ", i=" << i << ", k=" << k << "). "
+              << "' at (j_atlas=" << j_atlas << ", i=" << i << ", k=" << k << "). "
               << "Policy: abort. Check the input file for corrupted or unfilled data.";
           ABORT(oss.str());
         }
         const double dval = static_cast<double>(val);
-        fieldView(j_atlas * nLon + i, k) = dval;
+        fieldView(readFunctionSpace_->index(j_atlas, i), k) = dval;
         if (dval < valMin) valMin = dval;
         if (dval > valMax) valMax = dval;
       }
@@ -791,8 +838,10 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
 // -------------------------------------------------------------------------------------------------
 
 /// Opens input file(s) and reads the requested variables into newly created Atlas fields
-/// that are added to outFields.  Should only be called on rank 0 because readFunctionSpace_
-/// uses a serial distribution (all grid points on rank 0).
+/// that are added to outFields.  Called on ALL MPI ranks because readFunctionSpace_ uses an
+/// equal_regions distribution that assigns a contiguous band of latitude rows to each rank.
+/// Each rank independently opens the file(s) and reads only its local j-rows; no inter-rank
+/// communication is required in this function.
 ///
 /// File selection follows the same policy as write:
 ///   - If params_.filenames is non-empty, each entry (prefixed by params_.datapath) is opened
