@@ -8,6 +8,7 @@
 #include <netcdf.h>
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <set>
@@ -19,6 +20,8 @@
 
 #include "oops/base/GeometryData.h"
 #include "oops/base/Variables.h"
+#include "oops/util/DateTime.h"
+#include "oops/util/Duration.h"
 #include "oops/util/Logger.h"
 #include "oops/util/stringFunctions.h"
 #include "oops/util/Timer.h"
@@ -141,8 +144,13 @@ void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileion
   // readFunctionSpace_ uses an equal_regions distribution so every MPI rank reads its own
   // slice of latitude rows.  All ranks must call readStructuredFields so that each rank's
   // portion of the structured grid is populated before interpolation.
+  // The valid time is also read from the first file and used to update x.validTime().
+  // fileTime is initialised to x.validTime() as a fallback: if no time variable is found
+  // in the file the State's existing valid time is preserved.
   atlas::FieldSet fieldsStructured;
-  this->readStructuredFields(fieldsStructured, fieldNames, x.validTime(), fileionames);
+  util::DateTime fileTime = x.validTime();  // fallback: unchanged when file has no time var
+  this->readStructuredFields(fieldsStructured, fieldNames, x.validTime(), fileionames, &fileTime);
+  x.validTime() = fileTime;
 
   // Interpolate from the structured grid to the cubed-sphere (all ranks participate).
   atlas::FieldSet fieldsCubeSphere;
@@ -167,8 +175,13 @@ void IOStructuredGrid::read(Increment & dx, const eckit::LocalConfiguration & fi
 
   // Read fields from file(s) into the structured (readFunctionSpace_) Atlas FieldSet.
   // All ranks participate because readFunctionSpace_ uses an equal_regions distribution.
+  // The valid time is also read from the first file and used to update dx.validTime().
+  // fileTime is initialised to dx.validTime() as a fallback: if no time variable is found
+  // in the file the Increment's existing valid time is preserved.
   atlas::FieldSet fieldsStructured;
-  this->readStructuredFields(fieldsStructured, fieldNames, dx.validTime(), fileionames);
+  util::DateTime fileTime = dx.validTime();  // fallback: unchanged when file has no time var
+  this->readStructuredFields(fieldsStructured, fieldNames, dx.validTime(), fileionames, &fileTime);
+  dx.validTime() = fileTime;
 
   // Interpolate from the structured grid to the cubed-sphere (all ranks participate).
   atlas::FieldSet fieldsCubeSphere;
@@ -346,6 +359,118 @@ static bool detectFileLatNorthFirst(int fileId, const std::string & latDimName, 
                        << latDimName << "') found in file; assuming north-to-south ordering "
                        << "(flipJ=false). Verify input file conventions." << std::endl;
   return true;
+}
+
+// -------------------------------------------------------------------------------------------------
+
+/// Reads the valid time from an open NetCDF file.
+///
+/// Priority:
+///   1. `time_iso` — 2-D character variable (dimensions [time, nchars] in C order, i.e.
+///      (/nchars, time/) in Fortran order).  The ISO-8601 string at index `[0, :]` is read
+///      and parsed directly into `util::DateTime`.
+///   2. `time`     — numeric variable whose `units` attribute has the form
+///      `"hours since YYYY-MM-DDTHH:MM:SS"`.  The base datetime is parsed from the units
+///      string and the numeric offset (in hours) is added.
+///
+/// If neither variable is found the function returns `false` and `fileTime` is unchanged.
+/// Logs the chosen method and the resulting datetime.
+///
+/// @param[in]  fileId    Open read-mode NetCDF file ID.
+/// @param[out] fileTime  Receives the valid time on success.
+/// @return               true on success, false if no recognised time variable is present.
+static bool readValidTimeFromFile(int fileId, util::DateTime & fileTime) {
+  // ------ 1. Try time_iso (ISO 8601 character variable) ------
+  {
+    int timeIsoId;
+    if (nc_inq_varid(fileId, "time_iso", &timeIsoId) == NC_NOERR) {
+      int ndims = 0;
+      if (nc_inq_varndims(fileId, timeIsoId, &ndims) == NC_NOERR && ndims == 2) {
+        int dimids[2];
+        if (nc_inq_vardimid(fileId, timeIsoId, dimids) == NC_NOERR) {
+          // C-order: dimids[0] = time dimension, dimids[1] = char dimension
+          size_t charLen = 0;
+          if (nc_inq_dimlen(fileId, dimids[1], &charLen) == NC_NOERR && charLen > 0) {
+            size_t start[2] = {0, 0};
+            size_t count[2] = {1, charLen};
+            std::vector<char> buf(charLen + 1, '\0');
+            if (nc_get_vara_text(fileId, timeIsoId, start, count, buf.data()) == NC_NOERR) {
+              std::string isoStr(buf.data());
+              // Trim at the first embedded null character
+              const auto nullPos = isoStr.find('\0');
+              if (nullPos != std::string::npos) isoStr.resize(nullPos);
+              // Trim trailing whitespace
+              while (!isoStr.empty() && (isoStr.back() == ' ' || isoStr.back() == '\t'))
+                isoStr.pop_back();
+              // Ensure a trailing 'Z' so util::DateTime can parse it
+              if (!isoStr.empty() && isoStr.back() != 'Z') isoStr += "Z";
+              if (!isoStr.empty()) {
+                oops::Log::info() << "IOStructuredGrid: valid time from time_iso: "
+                                  << isoStr << std::endl;
+                fileTime = util::DateTime(isoStr);
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ------ 2. Fall back to numeric time + "hours since ..." units ------
+  {
+    int timeId;
+    if (nc_inq_varid(fileId, "time", &timeId) == NC_NOERR) {
+      // Read the units attribute
+      size_t attLen = 0;
+      if (nc_inq_attlen(fileId, timeId, "units", &attLen) == NC_NOERR && attLen > 0) {
+        std::vector<char> unitsVec(attLen + 1, '\0');
+        if (nc_get_att_text(fileId, timeId, "units", unitsVec.data()) == NC_NOERR) {
+          const std::string units(unitsVec.data(), attLen);
+          const std::string prefix = "hours since ";
+          if (units.substr(0, prefix.size()) == prefix) {
+            // Parse the base datetime from the units string
+            std::string baseDateStr = units.substr(prefix.size());
+            // Trim trailing whitespace
+            while (!baseDateStr.empty() &&
+                   (baseDateStr.back() == ' ' || baseDateStr.back() == '\t'))
+              baseDateStr.pop_back();
+            // Ensure trailing 'Z'
+            if (!baseDateStr.empty() && baseDateStr.back() != 'Z') baseDateStr += "Z";
+
+            // Read the numeric time value at index 0 (hours offset from the base)
+            double timeVal = 0.0;
+            {
+              size_t start = 0, count = 1;
+              nc_get_vara_double(fileId, timeId, &start, &count, &timeVal);
+            }
+
+            // Compute the offset duration from hours → seconds.
+            // The duration string requires a non-negative integer, so the sign of timeVal
+            // is handled separately via the +/- operator below.
+            const int64_t absSeconds =
+                static_cast<int64_t>(std::round(std::abs(timeVal) * 3600.0));
+            std::ostringstream durStr;
+            durStr << "PT" << absSeconds << "S";
+            const util::Duration offset(durStr.str());
+
+            const util::DateTime base(baseDateStr);
+            const util::DateTime result = (timeVal >= 0.0) ? base + offset : base - offset;
+
+            oops::Log::info() << "IOStructuredGrid: valid time from time + units (units='"
+                              << units << "', value=" << timeVal << "): "
+                              << result << std::endl;
+            fileTime = result;
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  oops::Log::warning() << "IOStructuredGrid: no recognised time variable (time_iso or time) "
+                       << "found in file; valid time not updated from file." << std::endl;
+  return false;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -853,11 +978,14 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
 /// @param fieldNames       Long names of the fields to read (from State/Increment variables).
 /// @param time             Valid time used to format the filename template.
 /// @param ioNames          Configuration mapping long field names to in-file variable names.
+/// @param fileTime         If non-null, receives the valid time read from the first file
+///                         (time_iso preferred; falls back to time + units).
 void IOStructuredGrid::readStructuredFields(
     atlas::FieldSet & outFields,
     const std::vector<std::string> & fieldNames,
     const util::DateTime & time,
-    const eckit::LocalConfiguration & ioNames) const {
+    const eckit::LocalConfiguration & ioNames,
+    util::DateTime * fileTime) const {
   // Build the ordered list of input file paths
   // ------------------------------------------
   std::vector<std::string> inputFiles;
@@ -886,12 +1014,19 @@ void IOStructuredGrid::readStructuredFields(
 
   // Process each file
   // -----------------
+  bool firstFile = true;
   for (const auto & pathFile : inputFiles) {
     oops::Log::trace() << classname() << " readStructuredFields: opening " << pathFile
                        << std::endl;
 
     int fileId;
     nc_rc(nc_open(pathFile.c_str(), NC_NOWRITE, &fileId), "nc_open " + pathFile);
+
+    // Read the valid time from the first file when requested by the caller.
+    if (firstFile && fileTime != nullptr) {
+      readValidTimeFromFile(fileId, *fileTime);
+      firstFile = false;
+    }
 
     // Read grid dimensions — prefer global attributes im/jm, fall back to dim lengths
     const int nLon = readGlobalIntAttrOrDimLen(fileId, "im", lonDimName);

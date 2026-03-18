@@ -103,7 +103,8 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
                              const eckit::LocalConfiguration &) const;
   void readStructuredFields(atlas::FieldSet &, const std::vector<std::string> &,
                             const util::DateTime &,
-                            const eckit::LocalConfiguration &) const;
+                            const eckit::LocalConfiguration &,
+                            util::DateTime * fileTime = nullptr) const;
   atlas::Field readVarToStructuredAtlasField(int fileId, const std::string & varName,
                                              int nLat, int nLon,
                                              const std::string & latDimName,
