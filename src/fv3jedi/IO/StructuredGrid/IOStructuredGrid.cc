@@ -797,7 +797,7 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
 /// File selection follows the same policy as write:
 ///   - If params_.filenames is non-empty, each entry (prefixed by params_.datapath) is opened
 ///     in sequence; duplicate variable names across files are resolved with a first-file-wins
-///     policy and a warning is emitted for each duplicate.
+///     policy and a trace log is emitted for each duplicate field that is skipped.
 ///   - Otherwise, params_.filename (after datetime formatting) is used.
 ///
 /// @param[out] outFields   Atlas FieldSet; read fields are appended to it.
@@ -859,8 +859,14 @@ void IOStructuredGrid::readStructuredFields(
                        << " flipJ=" << flipJ << std::endl;
 
     for (const auto & fieldLong : fieldNames) {
-      // Skip fields already filled from an earlier file (first-file-wins)
-      if (fieldsRead.count(fieldLong)) continue;
+      // Skip fields already filled from an earlier file (first-file-wins policy ensures
+      // deterministic behaviour when the same variable appears in more than one input file).
+      if (fieldsRead.count(fieldLong)) {
+        oops::Log::trace() << classname() << "  field '" << fieldLong
+                           << "' already read from an earlier file; skipping in "
+                           << pathFile << std::endl;
+        continue;
+      }
 
       // Resolve the in-file variable name (may differ from the long name)
       std::string varName = fieldLong;
@@ -886,6 +892,11 @@ void IOStructuredGrid::readStructuredFields(
       field.rename(fieldLong);
       outFields.add(field);
       fieldsRead.insert(fieldLong);
+
+      // Log the successful sourcing so operators can trace which file each field came from
+      oops::Log::info() << classname() << " field '" << fieldLong
+                        << "' (file var '" << varName << "') sourced from " << pathFile
+                        << std::endl;
     }
 
     nc_rc(nc_close(fileId), "nc_close " + pathFile);
