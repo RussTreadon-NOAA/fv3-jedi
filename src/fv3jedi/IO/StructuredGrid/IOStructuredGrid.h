@@ -112,6 +112,7 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
 
   // Data
   std::unique_ptr<oops::GlobalInterpolator> interpolator_;
+  std::unique_ptr<oops::GlobalInterpolator> readInterpolator_;
   const Geometry & geom_;
   std::string gridStr_;
   Parameters_ params_;
