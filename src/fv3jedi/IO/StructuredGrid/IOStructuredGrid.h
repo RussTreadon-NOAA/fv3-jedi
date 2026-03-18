@@ -43,7 +43,7 @@ class IOStructuredGridParameters : public IOParametersBase {
   // List of input files for multi-file read (e.g. separate atm and sfc files).
   // When non-empty, takes precedence over filename for read operations.
   // Duplicate variable names across files are resolved with a first-file-wins
-  // policy; a trace log is emitted when a variable is skipped due to duplication.
+  // policy; a trace log is emitted when a field is skipped due to duplication.
   oops::Parameter<std::vector<std::string>> filenames{"filenames", "filenames", {}, this};
 
   // Interpolator type

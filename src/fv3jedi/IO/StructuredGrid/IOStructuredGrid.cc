@@ -797,7 +797,7 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
 /// File selection follows the same policy as write:
 ///   - If params_.filenames is non-empty, each entry (prefixed by params_.datapath) is opened
 ///     in sequence; duplicate variable names across files are resolved with a first-file-wins
-///     policy and a warning is emitted for each duplicate.
+///     policy and a trace log is emitted for each duplicate field that is skipped.
 ///   - Otherwise, params_.filename (after datetime formatting) is used.
 ///
 /// @param[out] outFields   Atlas FieldSet; read fields are appended to it.
