@@ -1128,7 +1128,7 @@ void IOStructuredGrid::readStructuredFields(
         // write path. Using equal_regions here would require distributed→distributed
         // interpolation which is not guaranteed to work with all backends.
         const int commSize = geom_.getComm().size();
-        const std::vector<int> fileZeros(fileGrid.size(), 0);
+        std::vector<int> fileZeros(fileGrid.size(), 0);  // non-const: .data() must be int* not const int*
         const atlas::grid::Distribution fileReadDist(commSize, fileGrid.size(), fileZeros.data());
         readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(
             fileGrid, fileReadDist, atlas_conf));
