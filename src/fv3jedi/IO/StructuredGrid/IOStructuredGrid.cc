@@ -87,18 +87,19 @@ IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & pa
   writeFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, dist, atlas_conf));
 
   // Structured grid function space (read)
-  // Uses the same serial (all-on-rank-0) distribution as writeFunctionSpace_ so that
-  // GlobalInterpolator can perform a serial → distributed scatter (StructuredColumns →
-  // CubeSphere), mirroring the write path (distributed CubeSphere → serial StructuredColumns).
-  // Using an equal_regions distribution instead would require distributed→distributed
-  // interpolation, which is a fundamentally different communication pattern from the
-  // write path and is not guaranteed to be supported by all GlobalInterpolator backends.
-  // With the serial distribution:
-  //   - Rank 0 owns all latitude rows: j_begin=0, j_end=nLat → reads the full file
-  //   - Other ranks own no rows: n_j_local=0 → create empty fields, skip NC read
-  //   - readInterpolator_->apply() scatters rank-0 data to distributed cube-sphere
+  // Uses an equal_regions distribution so every MPI rank owns a contiguous band of
+  // latitude rows.  This ensures GeometryData builds its globalNodeTree_ on all ranks,
+  // which is required by GlobalInterpolator::apply() (it calls closestTask() internally
+  // and asserts !globalNodeTree_.empty()).  A serial (all-on-rank-0) distribution cannot
+  // be used here because GeometryData silently skips tree setup when some tasks own zero
+  // points, causing that assertion to fire.
+  // With equal_regions:
+  //   - Each rank owns rows [j_begin, j_end): reads its slice from the NC file in parallel
+  //   - readInterpolator_->apply() does a distributed StructuredColumns → CubeSphere interp
   // --------------------------------------------------------------------------------------
-  readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, dist, atlas_conf));
+  const atlas::grid::Distribution readDist(grid, atlas::grid::Partitioner("equal_regions"));
+  readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, readDist,
+                                                                       atlas_conf));
 
   // Create a GeometryData object for the write (cube-sphere → structured) interpolator
   // ------------------------------------------------------------------------------------
@@ -114,6 +115,8 @@ IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & pa
   // Create a GeometryData for the read (structured → cube-sphere) interpolator.
   // The source is the equal_regions readFunctionSpace_; an empty field set is sufficient
   // because the StructuredColumns function space provides its own coordinate information.
+  // With equal_regions, GeometryData builds its globalNodeTree_ on all ranks, which is
+  // required by GlobalInterpolator.
   // ------------------------------------------------------------------------------------
   atlas::FieldSet readGeomFields;
   oops::GeometryData readGeomData(*readFunctionSpace_, readGeomFields, geom.levelsAreTopDown(),
@@ -146,9 +149,9 @@ void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileion
   const std::vector<std::string> fieldNames(vars.variables().begin(), vars.variables().end());
 
   // Read fields from file(s) into the structured (readFunctionSpace_) Atlas FieldSet.
-  // readFunctionSpace_ uses a serial distribution (all points on rank 0), mirroring the
-  // write path.  Rank 0 reads the full file; other ranks create empty fields.
-  // readInterpolator_->apply() scatters the rank-0 data to the distributed cube-sphere.
+  // readFunctionSpace_ uses an equal_regions distribution so each MPI rank owns a band
+  // of latitude rows, reads its slice from the file, and has a valid GeometryData node
+  // tree — required by GlobalInterpolator::apply().
   // The valid time is also read from the first file and used to update x.validTime().
   // fileTime is initialised to x.validTime() as a fallback: if no time variable is found
   // in the file the State's existing valid time is preserved.
@@ -158,8 +161,7 @@ void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileion
   x.validTime() = fileTime;
 
   // Interpolate from the structured grid to the cubed-sphere (all ranks participate).
-  // Rank 0 has the full StructuredColumns data; readInterpolator_->apply() scatters
-  // it to the distributed cube-sphere via internal MPI communication.
+  // Each rank contributes its equal_regions StructuredColumns rows to the interpolation.
   oops::Log::info() << classname() << " read state: applying structured→cube-sphere"
                     << " interpolation on grid '"
                     << readFunctionSpace_->grid().name() << "'" << std::endl;
@@ -186,9 +188,9 @@ void IOStructuredGrid::read(Increment & dx, const eckit::LocalConfiguration & fi
   const std::vector<std::string> fieldNames(vars.variables().begin(), vars.variables().end());
 
   // Read fields from file(s) into the structured (readFunctionSpace_) Atlas FieldSet.
-  // readFunctionSpace_ uses a serial distribution (all points on rank 0), mirroring the
-  // write path.  Rank 0 reads the full file; other ranks create empty fields.
-  // readInterpolator_->apply() scatters the rank-0 data to the distributed cube-sphere.
+  // readFunctionSpace_ uses an equal_regions distribution so each MPI rank owns a band
+  // of latitude rows, reads its slice from the file, and has a valid GeometryData node
+  // tree — required by GlobalInterpolator::apply().
   // The valid time is also read from the first file and used to update dx.validTime().
   // fileTime is initialised to dx.validTime() as a fallback: if no time variable is found
   // in the file the Increment's existing valid time is preserved.
@@ -198,8 +200,7 @@ void IOStructuredGrid::read(Increment & dx, const eckit::LocalConfiguration & fi
   dx.validTime() = fileTime;
 
   // Interpolate from the structured grid to the cubed-sphere (all ranks participate).
-  // Rank 0 has the full StructuredColumns data; readInterpolator_->apply() scatters
-  // it to the distributed cube-sphere via internal MPI communication.
+  // Each rank contributes its equal_regions StructuredColumns rows to the interpolation.
   oops::Log::info() << classname() << " read increment: applying structured→cube-sphere"
                     << " interpolation on grid '"
                     << readFunctionSpace_->grid().name() << "'" << std::endl;
@@ -1003,12 +1004,12 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
 /// Opens input file(s) and reads the requested variables into newly created Atlas fields
 /// that are added to outFields.  Called on ALL MPI ranks.
 ///
-/// readFunctionSpace_ uses a serial (all-on-rank-0) distribution, mirroring the write path:
-///   - Rank 0 owns all latitude rows (j_begin=0, j_end=nLat): opens the file and reads all data.
-///   - Other ranks own no rows (n_j_local=0): still open the file (to allow grid detection) but
-///     read nothing and create zero-size fields.
-/// After this function returns, readInterpolator_->apply() scatters rank-0 StructuredColumns
-/// data to all ranks' cube-sphere tiles via MPI communication inside GlobalInterpolator.
+/// readFunctionSpace_ uses an equal_regions distribution: each MPI rank owns a contiguous
+/// band of latitude rows [j_begin, j_end) and reads only those rows from the NC file.
+/// This ensures GeometryData builds its globalNodeTree_ on all ranks, which is required
+/// by GlobalInterpolator::apply() (closestTask() asserts !globalNodeTree_.empty()).
+/// After all ranks have filled their local portion, readInterpolator_->apply() performs a
+/// distributed StructuredColumns → CubeSphere interpolation across all ranks.
 ///
 /// File selection follows the same policy as write:
 ///   - If params_.filenames is non-empty, each entry (prefixed by params_.datapath) is opened
@@ -1123,13 +1124,13 @@ void IOStructuredGrid::readStructuredFields(
         const atlas::Grid fileGrid(fileGridStr);
         eckit::LocalConfiguration atlas_conf;
         atlas_conf.set("mpi_comm", geom_.getComm().name());
-        // Use the same serial (all-on-rank-0) distribution as the constructor so that
-        // GlobalInterpolator performs a serial → distributed scatter, mirroring the
-        // write path. Using equal_regions here would require distributed→distributed
-        // interpolation which is not guaranteed to work with all backends.
-        const int commSize = geom_.getComm().size();
-        std::vector<int> fileZeros(fileGrid.size(), 0);  // non-const: .data() must be int* not const int*
-        const atlas::grid::Distribution fileReadDist(commSize, fileGrid.size(), fileZeros.data());
+        // Use equal_regions distribution so all MPI ranks own some grid points and
+        // GeometryData builds its globalNodeTree_ on every rank.  A serial (zeros)
+        // distribution causes GeometryData to skip tree setup on ranks that own no
+        // points, leading to an assertion failure (!globalNodeTree_.empty()) inside
+        // GlobalInterpolator.
+        const atlas::grid::Distribution fileReadDist(fileGrid,
+            atlas::grid::Partitioner("equal_regions"));
         readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(
             fileGrid, fileReadDist, atlas_conf));
         // An empty FieldSet is sufficient: StructuredColumns provides its own
