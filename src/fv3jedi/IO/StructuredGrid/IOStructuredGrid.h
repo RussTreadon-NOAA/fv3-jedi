@@ -107,7 +107,8 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
   atlas::Field readVarToStructuredAtlasField(int fileId, const std::string & varName,
                                              int nLat, int nLon,
                                              const std::string & latDimName,
-                                             const std::string & lonDimName) const;
+                                             const std::string & lonDimName,
+                                             bool flipJ) const;
 
   // Data
   std::unique_ptr<oops::GlobalInterpolator> interpolator_;

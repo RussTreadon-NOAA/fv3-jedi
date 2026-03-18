@@ -259,6 +259,72 @@ static std::string inferAtlasGaussianGridString(int im, int jm) {
 
 // -------------------------------------------------------------------------------------------------
 
+/// Detect whether the latitude coordinate in an open NetCDF file is ordered north-to-south.
+///
+/// The function tries two candidate variable names in priority order:
+///   1. "lat"        — common convention in structured-grid output files
+///   2. latDimName   — dimension variable (e.g. "grid_yt" in UFS/GFS files)
+///
+/// For each candidate, the first and last latitude values are read (at longitude index 0
+/// for 2-D coordinate arrays) and compared.  If lat[0] > lat[nLat-1] the file is considered
+/// north-first (N→S).
+///
+/// If no recognisable latitude variable is found, north-first ordering is assumed (returns
+/// true) so that packing is a no-op and the caller gets the same behaviour as before this
+/// detection was introduced.
+///
+/// @param fileId      Open read-mode NetCDF file ID.
+/// @param latDimName  Name of the latitude dimension (e.g. "grid_yt").
+/// @param nLat        Number of latitude rows in the file.
+/// @return            true  if lat[0] > lat[nLat-1]  (north-to-south, no j-flip needed).
+///                    false if lat[0] < lat[nLat-1]  (south-to-north, j-flip needed).
+static bool detectFileLatNorthFirst(int fileId, const std::string & latDimName, int nLat) {
+  // Candidate variable names to check, in priority order
+  const std::vector<std::string> candidates = {"lat", latDimName};
+
+  for (const auto & varName : candidates) {
+    int varId;
+    if (nc_inq_varid(fileId, varName.c_str(), &varId) != NC_NOERR) continue;
+
+    // Get number of dimensions for this variable
+    int ndims;
+    if (nc_inq_varndims(fileId, varId, &ndims) != NC_NOERR) continue;
+    if (ndims < 1 || ndims > 2) continue;
+
+    float lat0 = 0.0f;
+    float latLast = 0.0f;
+
+    if (ndims == 1) {
+      // 1-D coordinate variable: lat(grid_yt)
+      size_t start = 0, count = 1;
+      if (nc_get_vara_float(fileId, varId, &start, &count, &lat0) != NC_NOERR) continue;
+      start = static_cast<size_t>(nLat - 1);
+      if (nc_get_vara_float(fileId, varId, &start, &count, &latLast) != NC_NOERR) continue;
+    } else {
+      // 2-D coordinate variable: lat(grid_yt, grid_xt) — read first longitude column
+      size_t start2[2] = {0, 0};
+      size_t count2[2] = {1, 1};
+      if (nc_get_vara_float(fileId, varId, start2, count2, &lat0) != NC_NOERR) continue;
+      start2[0] = static_cast<size_t>(nLat - 1);
+      if (nc_get_vara_float(fileId, varId, start2, count2, &latLast) != NC_NOERR) continue;
+    }
+
+    const bool northFirst = (lat0 > latLast);
+    oops::Log::trace() << "IOStructuredGrid: lat orientation from variable '" << varName
+                       << "': lat[0]=" << lat0 << " lat[nLat-1]=" << latLast
+                       << " -> northFirst=" << northFirst << std::endl;
+    return northFirst;
+  }
+
+  // No recognisable lat variable found; assume north-first (no flip) and warn the user.
+  oops::Log::warning() << "IOStructuredGrid: no latitude variable (tried 'lat' and '"
+                       << latDimName << "') found in file; assuming north-to-south ordering "
+                       << "(flipJ=false). Verify input file conventions." << std::endl;
+  return true;
+}
+
+// -------------------------------------------------------------------------------------------------
+
 void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
                                              const util::DateTime & time,
                                              const eckit::LocalConfiguration & ioNames,
@@ -530,12 +596,16 @@ void IOStructuredGrid::writeStructuredFields(const atlas::FieldSet & fields,
 /// @param nLon         Expected number of longitude columns (im).
 /// @param latDimName   Name of the latitude  dimension in the file (e.g. "grid_yt").
 /// @param lonDimName   Name of the longitude dimension in the file (e.g. "grid_xt").
+/// @param flipJ        When true the file j-index is reversed before mapping to the Atlas field:
+///                     j_atlas = (nLat - 1 - j_file).  Set by the caller after detecting
+///                     whether the file latitude axis runs south-to-north.
 /// @return             New Atlas field with shape (npts=nLat*nLon, nlev) on readFunctionSpace_.
 atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
     int fileId, const std::string & varName,
     int nLat, int nLon,
     const std::string & latDimName,
-    const std::string & lonDimName) const {
+    const std::string & lonDimName,
+    bool flipJ) const {
   // GFS/UFS NetCDF files use 9.99e20 as the _FillValue / missing_value convention.
   // Any value whose |val| exceeds half that magnitude is treated as missing.
   static constexpr float kGufsFillValue  = 9.99e20f;
@@ -622,7 +692,7 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
   const int nLevField = (iLev >= 0) ? static_cast<int>(dimLens[iLev]) : 1;
   oops::Log::trace() << classname() << " readVarToStructuredAtlasField: var='" << varName
                      << "' nLat=" << nLat << " nLon=" << nLon
-                     << " nLev=" << nLevField << std::endl;
+                     << " nLev=" << nLevField << " flipJ=" << flipJ << std::endl;
 
   // Step 5: Read _FillValue / missing_value attributes (both optional).
   // If the attribute is not present, default to the standard GFS/UFS fill value (9.99e20).
@@ -675,16 +745,19 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
 
   // Step 9: Check missing values, convert float → double, pack into Atlas field view.
   // Atlas field layout: fieldView(j*nLon + i, k) = value at (lat j, lon i, level k).
+  // When flipJ is true the file stores rows south-to-north but Atlas expects north-to-south
+  // (j=0 = northernmost row), so the file row j_file maps to Atlas row (nLat-1-j_file).
   // -----------------------------------------------------------------------------------
   double valMin =  std::numeric_limits<double>::max();
   double valMax = -std::numeric_limits<double>::max();
 
   for (int k = 0; k < nLevField; ++k) {
-    for (int j = 0; j < nLat; ++j) {
+    for (int j_file = 0; j_file < nLat; ++j_file) {
+      const int j_atlas = flipJ ? (nLat - 1 - j_file) : j_file;
       for (int i = 0; i < nLon; ++i) {
         // Buffer index using precomputed strides; time index is always 0
         size_t bufIdx = (iLev  >= 0 ? static_cast<size_t>(k) * strides[iLev]  : 0)
-                      + static_cast<size_t>(j) * strides[iLat]
+                      + static_cast<size_t>(j_file) * strides[iLat]
                       + static_cast<size_t>(i) * strides[iLon];
         const float val = buf[bufIdx];
         // Check against the threshold AND against the explicit fill/missing values.
@@ -698,12 +771,12 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
           std::ostringstream oss;
           oss << "IOStructuredGrid::readVarToStructuredAtlasField: missing/fill value "
               << val << " detected in variable '" << varName
-              << "' at (j=" << j << ", i=" << i << ", k=" << k << "). "
+              << "' at (j=" << j_file << ", i=" << i << ", k=" << k << "). "
               << "Policy: abort. Check the input file for corrupted or unfilled data.";
           ABORT(oss.str());
         }
         const double dval = static_cast<double>(val);
-        fieldView(j * nLon + i, k) = dval;
+        fieldView(j_atlas * nLon + i, k) = dval;
         if (dval < valMin) valMin = dval;
         if (dval > valMax) valMax = dval;
       }
@@ -776,6 +849,15 @@ void IOStructuredGrid::readStructuredFields(
     const int nLat = readGlobalIntAttrOrDimLen(fileId, "jm", latDimName);
     oops::Log::trace() << classname() << "  nLat=" << nLat << " nLon=" << nLon << std::endl;
 
+    // Detect latitude orientation: north-first (N→S) or south-first (S→N).
+    // Atlas StructuredColumns j=0 is always the northernmost row (N→S ordering).
+    // flipJ is set to true when the file stores latitudes south-to-north so that
+    // j_file=0 (south) is remapped to j_atlas=nLat-1 (south in Atlas).
+    const bool fileNorthFirst = detectFileLatNorthFirst(fileId, latDimName, nLat);
+    const bool flipJ = !fileNorthFirst;
+    oops::Log::trace() << classname() << "  fileNorthFirst=" << fileNorthFirst
+                       << " flipJ=" << flipJ << std::endl;
+
     for (const auto & fieldLong : fieldNames) {
       // Skip fields already filled from an earlier file (first-file-wins)
       if (fieldsRead.count(fieldLong)) continue;
@@ -798,7 +880,7 @@ void IOStructuredGrid::readStructuredFields(
                          << "' for field '" << fieldLong << "'" << std::endl;
 
       atlas::Field field = this->readVarToStructuredAtlasField(
-          fileId, varName, nLat, nLon, latDimName, lonDimName);
+          fileId, varName, nLat, nLon, latDimName, lonDimName, flipJ);
 
       // Give the field the long name so it can be matched back to the State/Increment
       field.rename(fieldLong);
