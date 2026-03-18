@@ -113,12 +113,15 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
 
   // Data
   std::unique_ptr<oops::GlobalInterpolator> interpolator_;
-  std::unique_ptr<oops::GlobalInterpolator> readInterpolator_;
+  // readInterpolator_ and readFunctionSpace_ are mutable because they are lazily updated
+  // in readStructuredFields (a const method) when the input file's Gaussian grid differs
+  // from the one created in the constructor.  This follows the standard lazy-init pattern.
+  mutable std::unique_ptr<oops::GlobalInterpolator> readInterpolator_;
   const Geometry & geom_;
   std::string gridStr_;
   Parameters_ params_;
   std::unique_ptr<atlas::functionspace::StructuredColumns> writeFunctionSpace_;
-  std::unique_ptr<atlas::functionspace::StructuredColumns> readFunctionSpace_;
+  mutable std::unique_ptr<atlas::functionspace::StructuredColumns> readFunctionSpace_;
 };
 
 // -------------------------------------------------------------------------------------------------

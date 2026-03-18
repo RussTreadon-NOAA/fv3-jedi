@@ -948,7 +948,24 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
           ABORT(oss.str());
         }
         const double dval = static_cast<double>(val);
-        fieldView(readFunctionSpace_->index(j_atlas, i), k) = dval;
+        const atlas::idx_t atlasIdx = readFunctionSpace_->index(j_atlas, i);
+        // Guard against array overflow: if the file's nLon or nLat differs from the
+        // Atlas function-space grid dimensions (i.e. readFunctionSpace_ was not yet
+        // updated to match this file), atlasIdx can exceed the field's allocated size,
+        // causing a segfault.  Detect this early with a helpful ABORT.
+        if (atlasIdx < 0 || atlasIdx >= static_cast<atlas::idx_t>(fieldView.shape(0))) {
+          std::ostringstream oss;
+          oss << "IOStructuredGrid::readVarToStructuredAtlasField: Atlas index "
+              << atlasIdx << " out of range [0, " << fieldView.shape(0) << ") "
+              << "for variable '" << varName << "' at "
+              << "(j_atlas=" << j_atlas << ", i=" << i << ", k=" << k << "). "
+              << "This indicates that the input file's grid (nLat=" << nLat
+              << ", nLon=" << nLon << ") does not match readFunctionSpace_ grid '"
+              << readFunctionSpace_->grid().name() << "'. "
+              << "Check the 'gridtype' parameter or file dimensions.";
+          ABORT(oss.str());
+        }
+        fieldView(atlasIdx, k) = dval;
         if (dval < valMin) valMin = dval;
         if (dval > valMax) valMax = dval;
       }
@@ -1015,6 +1032,11 @@ void IOStructuredGrid::readStructuredFields(
   // Process each file
   // -----------------
   bool firstFile = true;
+  // Grid string determined from the first file; subsequent files must match.
+  // Mixing files with different grids in one read call is not supported because
+  // the resulting Atlas fields would live on different function spaces and could
+  // not be interpolated together by a single readInterpolator_.
+  std::string expectedGridStr;
   for (const auto & pathFile : inputFiles) {
     oops::Log::trace() << classname() << " readStructuredFields: opening " << pathFile
                        << std::endl;
@@ -1032,6 +1054,83 @@ void IOStructuredGrid::readStructuredFields(
     const int nLon = readGlobalIntAttrOrDimLen(fileId, "im", lonDimName);
     const int nLat = readGlobalIntAttrOrDimLen(fileId, "jm", latDimName);
     oops::Log::trace() << classname() << "  nLat=" << nLat << " nLon=" << nLon << std::endl;
+
+    // -----------------------------------------------------------------------
+    // Ensure readFunctionSpace_ (and readInterpolator_) match this file's grid.
+    //
+    // The readFunctionSpace_ is initialised in the constructor from the FV3
+    // geometry (F<geom.npy()-1>).  Input files may come from a different-resolution
+    // Gaussian grid run (e.g. a higher-resolution GFS background for a coarser
+    // analysis), in which case the per-row longitude count (nx) differs between
+    // the Atlas function space and the file.  When nLon_file > atlas_nx the call
+    //   readFunctionSpace_->index(j_atlas, i)  for i >= atlas_nx
+    // returns an index that exceeds the Atlas field size, writing past the end of
+    // the field buffer (array overflow → segmentation fault after many iterations).
+    //
+    // Fix: infer the Atlas Gaussian grid that matches the file's nLon/nLat and
+    // lazily rebuild readFunctionSpace_ and readInterpolator_ when needed.
+    // The function space and interpolator are marked mutable for this purpose.
+    // -----------------------------------------------------------------------
+    if (gridStr_ == "gaussian") {
+      const std::string fileGridStr = inferAtlasGaussianGridString(nLon, nLat);
+      // Enforce that all input files in this call use the same Gaussian grid.
+      // Fields from different grids would live on different Atlas function spaces
+      // and cannot be interpolated together by a single readInterpolator_.
+      if (expectedGridStr.empty()) {
+        expectedGridStr = fileGridStr;
+      } else if (fileGridStr != expectedGridStr) {
+        std::ostringstream oss;
+        oss << "IOStructuredGrid::readStructuredFields: input file '" << pathFile
+            << "' is on grid '" << fileGridStr
+            << "' but an earlier file was on grid '" << expectedGridStr
+            << "'. All input files in a single read call must use the same Gaussian grid.";
+        ABORT(oss.str());
+      }
+      // readFunctionSpace_ is always initialised by the constructor, so accessing
+      // its grid name here is always safe.
+      if (fileGridStr != readFunctionSpace_->grid().name()) {
+        const std::string prevGridStr = readFunctionSpace_->grid().name();
+        oops::Log::info() << classname()
+                          << " readStructuredFields: input file grid '" << fileGridStr
+                          << "' differs from current readFunctionSpace_ grid '" << prevGridStr
+                          << "'; rebuilding readFunctionSpace_ and readInterpolator_."
+                          << std::endl;
+        const atlas::Grid fileGrid(fileGridStr);
+        eckit::LocalConfiguration atlas_conf;
+        atlas_conf.set("mpi_comm", geom_.getComm().name());
+        const atlas::grid::Distribution fileReadDist(
+            fileGrid, atlas::grid::Partitioner("equal_regions"));
+        readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(
+            fileGrid, fileReadDist, atlas_conf));
+        // An empty FieldSet is sufficient: StructuredColumns provides its own
+        // coordinate information so GeometryData does not need extra fields.
+        atlas::FieldSet readGeomFields;
+        oops::GeometryData readGeomData(*readFunctionSpace_, readGeomFields,
+                                        geom_.levelsAreTopDown(), geom_.getComm());
+        readInterpolator_.reset(new oops::GlobalInterpolator(
+            params_.toConfiguration(), readGeomData,
+            geom_.functionSpace(), geom_.getComm()));
+        oops::Log::info() << classname()
+                          << " readStructuredFields: readFunctionSpace_ rebuilt for grid '"
+                          << fileGridStr << "'." << std::endl;
+      }
+    } else {
+      // For non-Gaussian grids validate that the file dimensions match the
+      // function space that was created at construction time.
+      const atlas::StructuredGrid fsGrid(readFunctionSpace_->grid());
+      const int fsNy = static_cast<int>(fsGrid.ny());
+      const int fsNx = static_cast<int>(fsGrid.nx(0));
+      if (nLat != fsNy || nLon != fsNx) {
+        std::ostringstream oss;
+        oss << "IOStructuredGrid::readStructuredFields: input file '" << pathFile
+            << "' has nLat=" << nLat << " nLon=" << nLon
+            << " but readFunctionSpace_ was built for grid '"
+            << readFunctionSpace_->grid().name()
+            << "' with ny=" << fsNy << " nx=" << fsNx
+            << ". Ensure 'gridtype' in the YAML matches the input file's grid.";
+        ABORT(oss.str());
+      }
+    }
 
     // Detect latitude orientation: north-first (N→S) or south-first (S→N).
     // Atlas StructuredColumns j=0 is always the northernmost row (N→S ordering).
