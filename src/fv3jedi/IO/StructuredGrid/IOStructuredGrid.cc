@@ -72,7 +72,7 @@ static atlas::grid::Distribution makeLatBandDistribution(const atlas::Grid & gri
 
 // -------------------------------------------------------------------------------------------------
 IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & params)
-  : IOBase(geom, params.toConfiguration()), interpolator_(), readInterpolator_(),
+  : IOBase(geom, params.toConfiguration()), readInterpolator_(),
     params_(params), gridStr_(""),
     geom_(geom), writeFunctionSpace_(), readFunctionSpace_() {
   util::Timer timer(classname(), "IOStructuredGrid");
@@ -139,22 +139,16 @@ IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & pa
   readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, readDist,
                                                                        atlas_conf));
 
-  // Create a GeometryData object for the write (cube-sphere → structured) interpolator
-  // ------------------------------------------------------------------------------------
-  oops::GeometryData geomData(geom.functionSpace(), geom.fields(), geom.levelsAreTopDown(),
-                              geom.getComm());
-
-  // Create a generic interpolator for converting to the structured grid (write path)
-  // -------------------------------------------------------------------
-  interpolator_.reset(new oops::GlobalInterpolator(params.toConfiguration(), geomData,
-                                                   *writeFunctionSpace_,
-                                                   geom.getComm()));
-
   // Note: readInterpolator_ is built lazily in readStructuredFields() the first time
   // read() is called, then reset immediately after apply() while all MPI ranks are still
   // synchronised.  This guarantees readInterpolator_ is always null when ~IOStructuredGrid()
   // runs, preventing desynchronised GlobalInterpolator destructor MPI collectives that
   // would otherwise corrupt vector sizes → "cannot create std::vector larger than max_size()".
+  //
+  // The write-path GlobalInterpolator is NOT stored as a member for the same reason: its
+  // constructor and destructor involve MPI collectives, and ~IOStructuredGrid() can run
+  // during desynchronised Variational cleanup.  Instead it is built locally inside
+  // interpAndWrite() and destroyed synchronously at the end of each write() call.
   oops::Log::trace() << classname() << " constructor done" << std::endl;
 }
 // -------------------------------------------------------------------------------------------------
@@ -273,10 +267,37 @@ void IOStructuredGrid::interpAndWrite(const T & obj, const std::string & label,
   atlas::FieldSet fieldsGeographic;
   obj.toFieldSet(fieldsCubeSphere);
 
-  // Apply interpolation
-  interpolator_->apply(fieldsCubeSphere, fieldsGeographic);
+  // Build the write-path GeometryData and GlobalInterpolator.
+  // The GlobalInterpolator is wrapped in a unique_ptr so we can explicitly reset it (call
+  // its destructor) in a synchronised context immediately after apply().
+  //
+  // If instead we used a long-lived member interpolator_, it would be destroyed in
+  // ~IOStructuredGrid() during Variational cleanup when ranks are desynchronised, causing
+  // MPI collective operations in the GlobalInterpolator destructor to receive garbage
+  // values → std::length_error ("cannot create std::vector larger than max_size()").
+  //
+  // If instead we used a plain stack variable, ranks 1+ would exit interpAndWrite() before
+  // rank 0 finishes its file I/O (below), triggering the destructor on ranks 1+ while rank 0
+  // is still writing — the same desync problem.
+  //
+  // The unique_ptr + explicit reset() pattern solves both issues: all ranks reach reset()
+  // at the same point (right after the MPI-collective apply()), so the destructor MPI
+  // cleanup runs synchronously, before rank 0 goes off to do its (non-MPI) file I/O.
+  const oops::GeometryData writeGeomData(geom_.functionSpace(), geom_.fields(),
+                                         geom_.levelsAreTopDown(), geom_.getComm());
+  std::unique_ptr<oops::GlobalInterpolator> writeInterp(
+      new oops::GlobalInterpolator(params_.toConfiguration(), writeGeomData,
+                                   *writeFunctionSpace_, geom_.getComm()));
 
-  // Write to disk if rank 0
+  // Apply interpolation from cubed-sphere to the structured (write) grid.
+  writeInterp->apply(fieldsCubeSphere, fieldsGeographic);
+
+  // Release the interpolator while all MPI ranks are still synchronised inside this
+  // interpAndWrite() call (all ranks just finished apply() together).
+  // The GlobalInterpolator destructor's MPI cleanup runs synchronously here.
+  writeInterp.reset();
+
+  // Write to disk if rank 0 (non-MPI I/O; other ranks proceed without waiting).
   if (geom_.getComm().rank() == 0) {
     this->writeStructuredFields(fieldsGeographic, obj.validTime(), fileionames, fileioscaling);
   }

@@ -112,16 +112,22 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
                                              bool flipJ) const;
 
   // Data
-  std::unique_ptr<oops::GlobalInterpolator> interpolator_;
+  // Note: there is intentionally NO long-lived write-path GlobalInterpolator member here.
+  // oops::GlobalInterpolator constructors and destructors issue MPI collective operations.
+  // If a long-lived interpolator_ member were destroyed inside ~IOStructuredGrid() during
+  // Variational cleanup, the ranks could be at different points in the cleanup sequence
+  // (desynchronised), causing the MPI collectives to return garbage values used as
+  // std::vector sizes → "cannot create std::vector larger than max_size()".
+  // Instead, the write-path GlobalInterpolator is created locally inside interpAndWrite()
+  // and destroyed synchronously at the end of each write() call while all ranks are still
+  // inside the same synchronised call.
+  //
   // readInterpolator_ and readFunctionSpace_ are mutable because they are lazily updated
   // in readStructuredFields (a const method) when the input file's Gaussian grid differs
   // from the one created in the constructor.  This follows the standard lazy-init pattern.
   // readInterpolator_ is additionally reset to null at the end of each read(State&) /
-  // read(Increment&) call so that the GlobalInterpolator destructor — which issues MPI
-  // collective operations — runs while all ranks are still synchronised inside read().
-  // Destroying it later, inside ~IOStructuredGrid(), could occur when ranks are at
-  // different cleanup stages, causing desynchronised MPI collectives to return garbage
-  // values that are then used as std::vector sizes (→ std::length_error on all ranks).
+  // read(Increment&) call so that the GlobalInterpolator destructor runs while all ranks
+  // are still synchronised inside read().
   // readFunctionSpace_ is NOT reset after use because its destructor is MPI-safe even in
   // an unsynchronised context; it serves as a grid-name cache so that a subsequent read()
   // call can rebuild only the interpolator without recreating the function space.
