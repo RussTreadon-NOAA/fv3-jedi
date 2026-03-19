@@ -37,6 +37,40 @@ namespace fv3jedi {
 static IOMaker<IOStructuredGrid> makerIOStructuredGrid_("structured grid");
 static IOMaker<IOStructuredGrid> makerIOAuxGrid_("auxgrid");
 // -------------------------------------------------------------------------------------------------
+
+// Build an Atlas grid Distribution that assigns all longitude columns in each latitude row
+// to the same MPI rank, with rows divided as evenly as possible among nRanks ranks.
+//
+// This is a 1-D "latitude band" partitioner:
+//   rank k owns ALL grid points in rows [k*nRows/nRanks, (k+1)*nRows/nRanks).
+//
+// Unlike atlas::grid::Partitioner("equal_regions") — which creates 2-D geographic patches
+// where middle ranks share the same j_begin/j_end but each only owns a SUBSET of longitude
+// columns — this distribution ensures that:
+//   1. j_begin()/j_end() give the per-rank exclusive row range with no gaps between ranks.
+//   2. i_begin(j)/i_end(j) = [0, nx(j)) for every owned row: ALL lon columns owned.
+//   3. Every rank owns at least one row (as long as nRanks <= nRows), so GeometryData builds
+//      its globalNodeTree_ on all ranks, satisfying the GlobalInterpolator requirement.
+static atlas::grid::Distribution makeLatBandDistribution(const atlas::Grid & grid,
+                                                          int nRanks) {
+  const atlas::StructuredGrid sg(grid);
+  const atlas::idx_t nRows = sg.ny();
+  std::vector<int> partition;
+  // grid.size() == sum of sg.nx(j) over all j, so this reserves exactly the right capacity.
+  partition.reserve(static_cast<size_t>(grid.size()));
+  for (atlas::idx_t j = 0; j < nRows; ++j) {
+    // Clamp to nRanks-1 to guard against any edge-case integer-division result.
+    const int rank = std::min(static_cast<int>((static_cast<atlas::idx_t>(j) * nRanks) / nRows),
+                              nRanks - 1);
+    for (atlas::idx_t i = 0; i < sg.nx(j); ++i) {
+      partition.push_back(rank);
+    }
+  }
+  return atlas::grid::Distribution(nRanks, static_cast<atlas::idx_t>(grid.size()),
+                                   partition.data());
+}
+
+// -------------------------------------------------------------------------------------------------
 IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & params)
   : IOBase(geom, params.toConfiguration()), interpolator_(), readInterpolator_(),
     params_(params), gridStr_(""),
@@ -87,17 +121,21 @@ IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & pa
   writeFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, dist, atlas_conf));
 
   // Structured grid function space (read)
-  // Uses an equal_regions distribution so every MPI rank owns a contiguous band of
-  // latitude rows.  This ensures GeometryData builds its globalNodeTree_ on all ranks,
-  // which is required by GlobalInterpolator::apply() (it calls closestTask() internally
-  // and asserts !globalNodeTree_.empty()).  A serial (all-on-rank-0) distribution cannot
-  // be used here because GeometryData silently skips tree setup when some tasks own zero
-  // points, causing that assertion to fire.
-  // With equal_regions:
-  //   - Each rank owns rows [j_begin, j_end): reads its slice from the NC file in parallel
-  //   - readInterpolator_->apply() does a distributed StructuredColumns → CubeSphere interp
+  // Uses a 1-D latitude-band distribution built by makeLatBandDistribution().
+  // Each rank owns a contiguous band of complete latitude rows (all lon columns),
+  // which satisfies two independent requirements:
+  //   (a) GeometryData builds its globalNodeTree_ on ALL ranks because every rank
+  //       owns > 0 points.  A serial (all-on-rank-0) distribution would leave ranks
+  //       1+ with zero points, causing GeometryData to skip tree setup and
+  //       GlobalInterpolator::closestTask() to assert !globalNodeTree_.empty().
+  //   (b) The NC-file reading loop iterates i in [0, nLon) for each owned row j.
+  //       With equal_regions (a 2-D geographic patch partitioner), middle ranks share
+  //       the same j_begin/j_end but each owns only a lon slice.  Calling index(i,j)
+  //       for an (i,j) not owned by this rank returns -1 or garbage.  Latitude bands
+  //       guarantee i_begin(j)/i_end(j) = [0, nx(j)) for every owned row.
   // --------------------------------------------------------------------------------------
-  const atlas::grid::Distribution readDist(grid, atlas::grid::Partitioner("equal_regions"));
+  const atlas::grid::Distribution readDist = makeLatBandDistribution(grid,
+                                                                      geom.getComm().size());
   readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(grid, readDist,
                                                                        atlas_conf));
 
@@ -113,9 +151,9 @@ IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & pa
                                                    geom.getComm()));
 
   // Create a GeometryData for the read (structured → cube-sphere) interpolator.
-  // The source is the equal_regions readFunctionSpace_; an empty field set is sufficient
+  // The source is the latitude-band readFunctionSpace_; an empty field set is sufficient
   // because the StructuredColumns function space provides its own coordinate information.
-  // With equal_regions, GeometryData builds its globalNodeTree_ on all ranks, which is
+  // With latitude bands, GeometryData builds its globalNodeTree_ on all ranks, which is
   // required by GlobalInterpolator.
   // ------------------------------------------------------------------------------------
   atlas::FieldSet readGeomFields;
@@ -157,9 +195,9 @@ void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileion
   oops::Log::trace() << classname() << " fieldNames is " << fieldNames << std::endl;
 
   // Read fields from file(s) into the structured (readFunctionSpace_) Atlas FieldSet.
-  // readFunctionSpace_ uses an equal_regions distribution so each MPI rank owns a band
-  // of latitude rows, reads its slice from the file, and has a valid GeometryData node
-  // tree — required by GlobalInterpolator::apply().
+  // readFunctionSpace_ uses a latitude-band distribution so each MPI rank owns a contiguous
+  // band of complete latitude rows, reads its slice from the file, and has a valid
+  // GeometryData node tree — required by GlobalInterpolator::apply().
   // The valid time is also read from the first file and used to update x.validTime().
   // fileTime is initialised to x.validTime() as a fallback: if no time variable is found
   // in the file the State's existing valid time is preserved.
@@ -169,7 +207,7 @@ void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileion
   x.validTime() = fileTime;
 
   // Interpolate from the structured grid to the cubed-sphere (all ranks participate).
-  // Each rank contributes its equal_regions StructuredColumns rows to the interpolation.
+  // Each rank contributes its latitude-band StructuredColumns rows to the interpolation.
   oops::Log::info() << classname() << " read state: applying structured→cube-sphere"
                     << " interpolation on grid '"
                     << readFunctionSpace_->grid().name() << "'" << std::endl;
@@ -196,9 +234,9 @@ void IOStructuredGrid::read(Increment & dx, const eckit::LocalConfiguration & fi
   const std::vector<std::string> fieldNames(vars.variables().begin(), vars.variables().end());
 
   // Read fields from file(s) into the structured (readFunctionSpace_) Atlas FieldSet.
-  // readFunctionSpace_ uses an equal_regions distribution so each MPI rank owns a band
-  // of latitude rows, reads its slice from the file, and has a valid GeometryData node
-  // tree — required by GlobalInterpolator::apply().
+  // readFunctionSpace_ uses a latitude-band distribution so each MPI rank owns a contiguous
+  // band of complete latitude rows, reads its slice from the file, and has a valid
+  // GeometryData node tree — required by GlobalInterpolator::apply().
   // The valid time is also read from the first file and used to update dx.validTime().
   // fileTime is initialised to dx.validTime() as a fallback: if no time variable is found
   // in the file the Increment's existing valid time is preserved.
@@ -208,7 +246,7 @@ void IOStructuredGrid::read(Increment & dx, const eckit::LocalConfiguration & fi
   dx.validTime() = fileTime;
 
   // Interpolate from the structured grid to the cubed-sphere (all ranks participate).
-  // Each rank contributes its equal_regions StructuredColumns rows to the interpolation.
+  // Each rank contributes its latitude-band StructuredColumns rows to the interpolation.
   oops::Log::info() << classname() << " read increment: applying structured→cube-sphere"
                     << " interpolation on grid '"
                     << readFunctionSpace_->grid().name() << "'" << std::endl;
@@ -895,8 +933,8 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
   }
 
   // Step 6: Determine the local j-row range owned by this MPI rank.
-  // readFunctionSpace_ uses an equal_regions distribution, so each rank owns a contiguous
-  // band [j_begin, j_end) of Atlas latitude rows.  Atlas j=0 is the northernmost row.
+  // readFunctionSpace_ uses a latitude-band distribution, so each rank owns a contiguous
+  // band [j_begin, j_end) of Atlas latitude rows with ALL lon columns.  Atlas j=0 is the northernmost row.
   // flipJ mapping:
   //   flipJ=false → file j = Atlas j  → read file rows [j_begin, j_end)
   //   flipJ=true  → file j = nLat-1-j_atlas → read file rows [nLat-j_end, nLat-j_begin)
@@ -1013,8 +1051,8 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
 /// Opens input file(s) and reads the requested variables into newly created Atlas fields
 /// that are added to outFields.  Called on ALL MPI ranks.
 ///
-/// readFunctionSpace_ uses an equal_regions distribution: each MPI rank owns a contiguous
-/// band of latitude rows [j_begin, j_end) and reads only those rows from the NC file.
+/// readFunctionSpace_ uses a latitude-band distribution: each MPI rank owns a contiguous
+/// band of complete latitude rows [j_begin, j_end) and reads only those rows from the NC file.
 /// This ensures GeometryData builds its globalNodeTree_ on all ranks, which is required
 /// by GlobalInterpolator::apply() (closestTask() asserts !globalNodeTree_.empty()).
 /// After all ranks have filled their local portion, readInterpolator_->apply() performs a
@@ -1133,13 +1171,12 @@ void IOStructuredGrid::readStructuredFields(
         const atlas::Grid fileGrid(fileGridStr);
         eckit::LocalConfiguration atlas_conf;
         atlas_conf.set("mpi_comm", geom_.getComm().name());
-        // Use equal_regions distribution so all MPI ranks own some grid points and
-        // GeometryData builds its globalNodeTree_ on every rank.  A serial (zeros)
-        // distribution causes GeometryData to skip tree setup on ranks that own no
-        // points, leading to an assertion failure (!globalNodeTree_.empty()) inside
-        // GlobalInterpolator.
-        const atlas::grid::Distribution fileReadDist(fileGrid,
-            atlas::grid::Partitioner("equal_regions"));
+        // Use the same 1-D latitude-band distribution as the constructor to ensure:
+        //   (a) all ranks own complete rows (i_begin(j)=0, i_end(j)=nx(j)) so the NC
+        //       reading loop over i in [0, nLon) stays within each rank's owned range.
+        //   (b) every rank owns > 0 points so GeometryData builds its globalNodeTree_.
+        const atlas::grid::Distribution fileReadDist =
+            makeLatBandDistribution(fileGrid, geom_.getComm().size());
         readFunctionSpace_.reset(new atlas::functionspace::StructuredColumns(
             fileGrid, fileReadDist, atlas_conf));
         // An empty FieldSet is sufficient: StructuredColumns provides its own
