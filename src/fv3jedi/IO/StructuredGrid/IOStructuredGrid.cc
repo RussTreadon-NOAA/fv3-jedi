@@ -940,9 +940,10 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
   }
 
   // Step 9: Check missing values, convert float → double, pack into Atlas field view.
-  // Atlas field layout: fieldView(index(j_atlas, i), k).
-  //   readFunctionSpace_->index(j, i) gives the local flat index for global point (j, i)
-  //   where j must be in [j_begin, j_end) for this rank.
+  // Atlas StructuredColumns::index(i, j) has signature (lon_col_index, lat_row_index).
+  // Note: i = longitude column (0-based), j = latitude row (0-based) — column FIRST.
+  // The local flat index for owned point (i, j_atlas) is accessed as fieldView(idx, k)
+  // where idx = readFunctionSpace_->index(i, j_atlas).
   //
   // Buffer row index (buffer_row) within the read buffer for Atlas row j_atlas:
   //   flipJ=false: buffer_row = j_atlas - j_begin  (buffer rows in increasing Atlas-j order)
@@ -978,21 +979,21 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
           ABORT(oss.str());
         }
         const double dval = static_cast<double>(val);
-        const atlas::idx_t atlasIdx = readFunctionSpace_->index(j_atlas, i);
-        // Guard against array overflow: if the file's nLon or nLat differs from the
-        // Atlas function-space grid dimensions (i.e. readFunctionSpace_ was not yet
-        // updated to match this file), atlasIdx can exceed the field's allocated size,
-        // causing a segfault.  Detect this early with a helpful ABORT.
+        // Atlas StructuredColumns::index(i, j): i=longitude column, j=latitude row.
+        // Correct call: index(i, j_atlas) not index(j_atlas, i).
+        const atlas::idx_t atlasIdx = readFunctionSpace_->index(i, j_atlas);
+        // Guard: detect any out-of-range Atlas index early (safety net in case the
+        // readFunctionSpace_ grid still doesn't match the file, or if j_atlas is outside
+        // the owned [j_begin, j_end) range — which would indicate a logic error above).
         if (atlasIdx < 0 || atlasIdx >= static_cast<atlas::idx_t>(fieldView.shape(0))) {
           std::ostringstream oss;
           oss << "IOStructuredGrid::readVarToStructuredAtlasField: Atlas index "
               << atlasIdx << " out of range [0, " << fieldView.shape(0) << ") "
               << "for variable '" << varName << "' at "
               << "(j_atlas=" << j_atlas << ", i=" << i << ", k=" << k << "). "
-              << "This indicates that the input file's grid (nLat=" << nLat
-              << ", nLon=" << nLon << ") does not match readFunctionSpace_ grid '"
-              << readFunctionSpace_->grid().name() << "'. "
-              << "Check the 'gridtype' parameter or file dimensions.";
+              << "File grid: nLat=" << nLat << " nLon=" << nLon
+              << ", readFunctionSpace_ grid='" << readFunctionSpace_->grid().name()
+              << "', j_begin=" << j_begin << " j_end=" << j_end << ".";
           ABORT(oss.str());
         }
         fieldView(atlasIdx, k) = dval;
