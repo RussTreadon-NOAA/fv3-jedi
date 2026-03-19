@@ -116,6 +116,15 @@ class IOStructuredGrid : public IOBase, private util::ObjectCounter<IOStructured
   // readInterpolator_ and readFunctionSpace_ are mutable because they are lazily updated
   // in readStructuredFields (a const method) when the input file's Gaussian grid differs
   // from the one created in the constructor.  This follows the standard lazy-init pattern.
+  // readInterpolator_ is additionally reset to null at the end of each read(State&) /
+  // read(Increment&) call so that the GlobalInterpolator destructor — which issues MPI
+  // collective operations — runs while all ranks are still synchronised inside read().
+  // Destroying it later, inside ~IOStructuredGrid(), could occur when ranks are at
+  // different cleanup stages, causing desynchronised MPI collectives to return garbage
+  // values that are then used as std::vector sizes (→ std::length_error on all ranks).
+  // readFunctionSpace_ is NOT reset after use because its destructor is MPI-safe even in
+  // an unsynchronised context; it serves as a grid-name cache so that a subsequent read()
+  // call can rebuild only the interpolator without recreating the function space.
   mutable std::unique_ptr<oops::GlobalInterpolator> readInterpolator_;
   const Geometry & geom_;
   std::string gridStr_;

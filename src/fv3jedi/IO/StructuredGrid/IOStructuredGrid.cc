@@ -184,15 +184,7 @@ void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileion
 
   // Collect the field names requested by the State
   const oops::Variables & vars = x.variables();
-
-  // original code below
-  //const std::vector<std::string> fieldNames(vars.variables().begin(), vars.variables().end());
-
-    // This is safer and more readable                                                                                                 
   const std::vector<std::string> fieldNames = vars.variables();
-
-  oops::Log::trace() << classname() << " after load fieldNames " << std::endl;
-  oops::Log::trace() << classname() << " fieldNames is " << fieldNames << std::endl;
 
   // Read fields from file(s) into the structured (readFunctionSpace_) Atlas FieldSet.
   // readFunctionSpace_ uses a latitude-band distribution so each MPI rank owns a contiguous
@@ -215,6 +207,19 @@ void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileion
   readInterpolator_->apply(fieldsStructured, fieldsCubeSphere);
   oops::Log::info() << classname() << " read state: interpolation done; populating State"
                     << std::endl;
+
+  // Release readInterpolator_ while all MPI ranks are still synchronized inside this read()
+  // call.  The GlobalInterpolator destructor issues MPI collective operations to clean up
+  // its internal communication buffers.  If the destructor were to run later — inside
+  // IOStructuredGrid::~IOStructuredGrid() during Variational cleanup — ranks would be at
+  // different points in their respective cleanup sequences (desynchronised).  The out-of-
+  // phase MPI collectives return garbage, which gets used as a std::vector size, causing
+  // "cannot create std::vector larger than max_size()" on every rank.
+  // Resetting here, before any rank exits the synchronised read() call, guarantees that
+  // the MPI cleanup runs in a fully synchronised context.
+  // readFunctionSpace_ does not require synchronised MPI cleanup and is left intact for
+  // future read() calls (it can also act as a grid-name cache for lazy interpolator rebuild).
+  readInterpolator_.reset();
 
   // Populate the State from the interpolated cubed-sphere FieldSet.
   x.fromFieldSet(fieldsCubeSphere);
@@ -254,6 +259,10 @@ void IOStructuredGrid::read(Increment & dx, const eckit::LocalConfiguration & fi
   readInterpolator_->apply(fieldsStructured, fieldsCubeSphere);
   oops::Log::info() << classname() << " read increment: interpolation done; populating Increment"
                     << std::endl;
+
+  // Release readInterpolator_ while all MPI ranks are still synchronized inside this read()
+  // call (see the corresponding comment in read(State&) for the full explanation).
+  readInterpolator_.reset();
 
   // Populate the Increment from the interpolated cubed-sphere FieldSet.
   dx.fromFieldSet(fieldsCubeSphere);
@@ -1196,6 +1205,22 @@ void IOStructuredGrid::readStructuredFields(
         oops::Log::info() << classname()
                           << " readStructuredFields: readFunctionSpace_ rebuilt for grid '"
                           << fileGridStr << "'." << std::endl;
+      } else if (!readInterpolator_) {
+        // Same Gaussian grid as readFunctionSpace_, but readInterpolator_ was reset after a
+        // previous read() call to ensure its MPI cleanup ran while all ranks were
+        // synchronised.  Rebuild just the interpolator here (function space is reused).
+        oops::Log::info() << classname()
+                          << " readStructuredFields: readInterpolator_ is null;"
+                          << " rebuilding for grid '"
+                          << readFunctionSpace_->grid().name() << "'." << std::endl;
+        eckit::LocalConfiguration atlas_conf;
+        atlas_conf.set("mpi_comm", geom_.getComm().name());
+        atlas::FieldSet readGeomFields;
+        oops::GeometryData readGeomData(*readFunctionSpace_, readGeomFields,
+                                        geom_.levelsAreTopDown(), geom_.getComm());
+        readInterpolator_.reset(new oops::GlobalInterpolator(
+            params_.toConfiguration(), readGeomData,
+            geom_.functionSpace(), geom_.getComm()));
       }
     } else {
       // For non-Gaussian grids validate that the file dimensions match the
