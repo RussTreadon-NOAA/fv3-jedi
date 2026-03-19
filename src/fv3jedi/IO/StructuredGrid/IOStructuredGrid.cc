@@ -150,22 +150,11 @@ IOStructuredGrid::IOStructuredGrid(const Geometry & geom, const Parameters_ & pa
                                                    *writeFunctionSpace_,
                                                    geom.getComm()));
 
-  // Create a GeometryData for the read (structured → cube-sphere) interpolator.
-  // The source is the latitude-band readFunctionSpace_; an empty field set is sufficient
-  // because the StructuredColumns function space provides its own coordinate information.
-  // With latitude bands, GeometryData builds its globalNodeTree_ on all ranks, which is
-  // required by GlobalInterpolator.
-  // ------------------------------------------------------------------------------------
-  atlas::FieldSet readGeomFields;
-  oops::GeometryData readGeomData(*readFunctionSpace_, readGeomFields, geom.levelsAreTopDown(),
-                                  geom.getComm());
-
-  // Create an interpolator for converting from the structured grid to the cube-sphere
-  // (read path: structured → cubed-sphere)
-  // -------------------------------------------------------------------
-  readInterpolator_.reset(new oops::GlobalInterpolator(params.toConfiguration(), readGeomData,
-                                                       geom.functionSpace(),
-                                                       geom.getComm()));
+  // Note: readInterpolator_ is built lazily in readStructuredFields() the first time
+  // read() is called, then reset immediately after apply() while all MPI ranks are still
+  // synchronised.  This guarantees readInterpolator_ is always null when ~IOStructuredGrid()
+  // runs, preventing desynchronised GlobalInterpolator destructor MPI collectives that
+  // would otherwise corrupt vector sizes → "cannot create std::vector larger than max_size()".
   oops::Log::trace() << classname() << " constructor done" << std::endl;
 }
 // -------------------------------------------------------------------------------------------------
@@ -1206,9 +1195,8 @@ void IOStructuredGrid::readStructuredFields(
                           << " readStructuredFields: readFunctionSpace_ rebuilt for grid '"
                           << fileGridStr << "'." << std::endl;
       } else if (!readInterpolator_) {
-        // Same Gaussian grid as readFunctionSpace_, but readInterpolator_ was reset after a
-        // previous read() call to ensure its MPI cleanup ran while all ranks were
-        // synchronised.  Rebuild just the interpolator here (function space is reused).
+        // readInterpolator_ is null (first call, or after reset from previous read()).
+        // Rebuild just the interpolator; the function space already has the correct grid.
         oops::Log::info() << classname()
                           << " readStructuredFields: readInterpolator_ is null;"
                           << " rebuilding for grid '"
@@ -1237,6 +1225,23 @@ void IOStructuredGrid::readStructuredFields(
             << "' with ny=" << fsNy << " nx=" << fsNx
             << ". Ensure 'gridtype' in the YAML matches the input file's grid.";
         ABORT(oss.str());
+      }
+      // Build readInterpolator_ lazily if null (first call, or after reset).
+      // For non-Gaussian grids the grid never changes between files, so the
+      // function space is always valid and only the interpolator needs building.
+      if (!readInterpolator_) {
+        oops::Log::info() << classname()
+                          << " readStructuredFields: readInterpolator_ is null;"
+                          << " building for non-Gaussian grid '"
+                          << readFunctionSpace_->grid().name() << "'." << std::endl;
+        eckit::LocalConfiguration atlas_conf;
+        atlas_conf.set("mpi_comm", geom_.getComm().name());
+        atlas::FieldSet readGeomFields;
+        oops::GeometryData readGeomData(*readFunctionSpace_, readGeomFields,
+                                        geom_.levelsAreTopDown(), geom_.getComm());
+        readInterpolator_.reset(new oops::GlobalInterpolator(
+            params_.toConfiguration(), readGeomData,
+            geom_.functionSpace(), geom_.getComm()));
       }
     }
 
