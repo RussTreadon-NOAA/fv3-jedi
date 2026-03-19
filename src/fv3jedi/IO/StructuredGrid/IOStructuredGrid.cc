@@ -146,7 +146,15 @@ void IOStructuredGrid::read(State & x, const eckit::LocalConfiguration & fileion
 
   // Collect the field names requested by the State
   const oops::Variables & vars = x.variables();
-  const std::vector<std::string> fieldNames(vars.variables().begin(), vars.variables().end());
+
+  // original code below
+  //const std::vector<std::string> fieldNames(vars.variables().begin(), vars.variables().end());
+
+    // This is safer and more readable                                                                                                 
+  const std::vector<std::string> fieldNames = vars.variables();
+
+  oops::Log::trace() << classname() << " after load fieldNames " << std::endl;
+  oops::Log::trace() << classname() << " fieldNames is " << fieldNames << std::endl;
 
   // Read fields from file(s) into the structured (readFunctionSpace_) Atlas FieldSet.
   // readFunctionSpace_ uses an equal_regions distribution so each MPI rank owns a band
