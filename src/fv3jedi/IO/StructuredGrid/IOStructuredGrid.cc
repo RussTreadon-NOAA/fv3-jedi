@@ -964,9 +964,15 @@ atlas::Field IOStructuredGrid::readVarToStructuredAtlasField(
 
   // Step 7: Create the Atlas field on the local portion of readFunctionSpace_.
   // The field has shape (local_npts, nLevField) where local_npts = readFunctionSpace_->size().
+  // Set "interp_type" metadata to "default" so that UnstructuredInterpolator::apply() can
+  // perform bilinear interpolation from this field to the cube-sphere target.
+  // fv3-jedi's Fortran code (fv3jedi_fields_mod.f90) sets interp_type='default' on all
+  // standard continuous fields; without this metadata oops::UnstructuredInterpolator::apply
+  // calls field.metadata().get<std::string>("interp_type") and throws "not found".
   // ----------------------------------------------------------------------
   atlas::Field field = readFunctionSpace_->createField<double>(
       atlas::option::name(varName) | atlas::option::levels(nLevField));
+  field.metadata().set("interp_type", "default");
   auto fieldView = atlas::array::make_view<double, 2>(field);
 
   // Step 8: Compute buffer strides (C-order, based on the local count array).
